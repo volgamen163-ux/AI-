@@ -11,6 +11,7 @@ import { EntityForm } from "./components/EntityForm";
 import { CompanyDossier } from "./components/CompanyDossier";
 import { initialViewFromSearch } from "./lib/navigation";
 import { IntegrationHealthPanel } from "./components/IntegrationHealthPanel";
+import { SourceAccessPanel } from "./components/SourceAccessPanel";
 import { ResearchPanel, type OfficialCompany } from "./components/ResearchPanel";
 import { automaticSignals, companyContext, companyName, marketStats, procurementMetrics, productOffers, relationLabel, summary } from "./lib/analytics";
 import { parseCsv, field as csvField } from "./lib/csv";
@@ -343,6 +344,7 @@ export default function App(){
     </>}
     {view==="sources"&&<>
      <IntegrationHealthPanel signedIn={signedIn}/>
+     <SourceAccessPanel signedIn={signedIn} userId={user?.id}/>
      <SectionTop kicker="INTEGRATION GATEWAY" title="Источники и интеграции" subtitle="Честная матрица реальных подключений, ручных реестров и необходимых разрешений. Все источники — через единый шлюз." action={<button className="btn line" onClick={()=>goto("overview")}>Проверить ИНН <ArrowRight size={16}/></button>}/>
      {providerError&&<div className="inline-alert">{providerError}</div>}<div className="integration-head"><div><span>СИСТЕМЫ И РЕЕСТРЫ</span><h2>Статус подключений</h2></div><span className="integration-counter">{(providers.length?providers:fallbackProviders).length} источников</span></div>
      <div className="source-grid">{(providers.length?providers:fallbackProviders).map(p=><article key={p.id} className="source-card"><div className="source-top"><span className="source-brand"><Database size={18}/></span><span className={"source-state "+(p.status==="live_partial"?"live":"manual")}>{p.status==="live_partial"?"Частично подключено":p.status==="credentials_required"?"Требует доступа":p.status==="manual"?"Ручной доступ":"API / лицензия"}</span></div><h3>{p.name}</h3><strong>{p.scope}</strong><p>{p.reason}</p><a href={safeHttpUrl(p.url)||"#"} target="_blank" rel="noopener noreferrer">Открыть реестр <ArrowUpRight size={16}/></a></article>)}</div>
