@@ -1,0 +1,23 @@
+name: NEXUS Analytics quality gate
+on:
+  push:
+    branches: [main, nexus-analytics-v2-staging]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
+      - name: Security guardrails
+        run: |
+          if grep -R -E 'service_role|sb_secret_' src; then echo "Secret-token pattern found in frontend"; exit 1; fi
