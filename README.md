@@ -1,19 +1,25 @@
-# NEXUS ANALYTICS · v2.0 STAGING
+# NEXUS ANALYTICS v2
 
-Единый React + TypeScript продукт для анализа компаний, закупок, судебных записей, продукции, наличия и рынка.
+Единая аналитическая платформа компаний, закупок, судов, товаров и цен. Реальные данные и демо изолированы. Исходные таблицы Supabase защищены RLS.
 
-Git: один репозиторий volgamen163-ux/AI- (ранее пустой). Ветка nexus-analytics-v2-staging. Backend: существующий Supabase mjqicmrwstqypwnvtkyf с таблицами na2_*, включённым RLS и Edge Function nexus-company-research.
+## Разработка
 
-## Запуск
+```bash
+npm install
+cp .env.example .env.local
+npm run dev
+npm run typecheck
+npm run test
+npm run build
+```
 
-npm install → npm run dev. Для реального облака задайте публичные VITE_SUPABASE_URL и VITE_SUPABASE_PUBLISHABLE_KEY из Supabase. Проверка: npm run typecheck && npm run test && npm run build.
+### Среды
 
-## Факты vs тесты
+- Github: `volgamen163-ux/AI-`, ветка `nexus-analytics-v2-staging`.
+- Supabase: `mjqicmrwstqypwnvtkyf`, таблицы `na2_*`.
+- Edge: `nexus-company-research`.
+- Original v1.0: `https://nexus-analytics-hub-volgamen163-1027.vercel.app/` — не затронут.
 
-- Демоданные помечены ДЕМО, не синхронизируются с базой и не относятся к реальным предприятиям.
-- Подтверждённые банковские карточки получаются через существующую Edge Function из Банка России.
-- ФНС, ЕИС, КАД, ФССП, Федресурс, ГИСП: статусы подключения серверные, ссылки не означают API.
-- Импорт CSV/XML без проверки подписи и достоверности.
-- Договор не равен победе; судебные требования не являются долгом; сигналы связей не доказательство аффилированности.
+## Безопасность
 
-Старый NEXUS ANALYTICS v1.0 не заменяется до тестирования новой версии.
+Только публичный `sb_publishable_` key в Vite. `service_role` запрещён в UI. Совпадения директоров, адресов и телефонов — сигналы, а не установленные факты. Договор ≠ победа. Сумма судебного иска ≠ долг. Подробности в `docs/ARCHITECTURE.md`.

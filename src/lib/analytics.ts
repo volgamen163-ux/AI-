@@ -1,80 +1,50 @@
-import type { Company, CourtCase, MarketOffer, Procurement, Product, Relation, Workspace } from "../types";
-
-export function validInn(inn: string): boolean {
-  if (!/^\d{10}(\d{2})?$/.test(inn)) return false;
-  const n = [...inn].map(Number);
-  const sum = (weights: number[]) => weights.reduce((acc, weight, i) => acc + weight * n[i], 0) % 11 % 10;
-  return inn.length === 10
-    ? sum([2, 4, 10, 3, 5, 9, 4, 6, 8]) === n[9]
-    : sum([7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) === n[10] && sum([3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]) === n[11];
+import type { Company, MarketOffer, Procurement, Product, Workspace, CompanyRelation } from "./types";
+import { norm } from "./validation";
+export function procurementMetrics(procs: Procurement[]) {
+ const real = procs.filter(p => !p.is_demo);
+ const count = (type: Procurement["event_type"]) => real.filter(p => p.event_type === type).length;
+ return {
+  participation: count("participation"), wins: count("win"), contracts: count("contract"),
+  other: count("other"),
+  contractValue: real.filter(p=>p.event_type==="contract").reduce((a,p)=>a+(Number(p.amount)||0),0),
+  sourceLinked: real.filter(p=>Boolean(p.source_url)).length
+ };
 }
-export function safeUrl(value: string | null | undefined): string | null {
-  if (!value) return null;
-  try {
-    const u = new URL(value);
-    return u.protocol === "https:" || u.protocol === "http:" ? u.toString() : null;
-  } catch { return null; }
+export function marketStats(offers: MarketOffer[]) {
+ const prices=offers.map(o=>Number(o.unit_price)).filter(x=>Number.isFinite(x)&&x>=0).sort((a,b)=>a-b);
+ if (!prices.length) return null;
+ const middle=Math.floor(prices.length/2);
+ return { count:prices.length, min:prices[0], max:prices[prices.length-1], median:prices.length%2?prices[middle]:(prices[middle-1]+prices[middle])/2,
+ inStock:offers.filter(o=>o.stock_status==="in_stock").length };
 }
-export function money(value: number | null | undefined): string {
-  return typeof value === "number" && Number.isFinite(value)
-    ? new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(value) + " ₽" : "Не указано";
+export type RelationSignal = { a: Company; b: Company; field: "director"|"legal_address"|"phone"|"email"; evidence: string; verified: false };
+export function automaticSignals(companies:Company[]): RelationSignal[] {
+ const fields = ["director","legal_address","phone","email"] as const;
+ const result:RelationSignal[]=[];
+ for(let i=0;i<companies.length;i++)for(let j=i+1;j<companies.length;j++) {
+  const a=companies[i],b=companies[j];
+  if(a.inn===b.inn)continue;
+  for(const field of fields){
+    const av=a[field]||"",bv=b[field]||"";
+    const x=field==="phone"?av.replace(/\D/g,"").replace(/^8(?=\d{10}$)/,"7"):norm(av);
+    const y=field==="phone"?bv.replace(/\D/g,"").replace(/^8(?=\d{10}$)/,"7"):norm(bv);
+    if(x.length >= (field==="legal_address"?16:field==="email"?6:7) && x===y)result.push({a,b,field,evidence:av,verified:false});
+  }
+ }
+ return result;
 }
-export function sourceLabel(status: string): string {
-  return ({ official_verified: "Проверено в реестре", user_verified: "Проверено пользователем", source_linked: "Есть ссылка", unverified: "Не подтверждено" } as Record<string,string>)[status] || "Не подтверждено";
+export function summary(w:Workspace){
+ const pr=procurementMetrics(w.procurements);
+ return {companies:w.companies.length,products:w.products.length,procurements:w.procurements.filter(x=>!x.is_demo).length,
+ courts:w.courts.filter(x=>!x.is_demo).length,marketOffers:w.offers.length,
+ linked:w.companies.filter(x=>x.source_url).length,signals:automaticSignals(w.companies).length+w.relations.length,
+ contractValue:pr.contractValue};
 }
-export function statistics(data: Workspace) {
-  const tenders = data.tenders.filter(x => !x.is_demo);
-  const cases = data.cases.filter(x => !x.is_demo);
-  return {
-    companies: data.companies.length,
-    products: data.products.length,
-    participation: tenders.filter(x => x.event_type === "participation").length,
-    declaredWins: tenders.filter(x => x.event_type === "win").length,
-    contracts: tenders.filter(x => x.event_type === "contract").length,
-    cases: cases.length,
-    claimSum: cases.reduce((a, x) => a + (x.claim_amount ?? 0), 0),
-    contractSum: tenders.filter(x => x.event_type === "contract").reduce((a, x) => a + (x.amount ?? 0), 0),
-  };
+export function companyContext(w:Workspace,id:string){
+ return {products:w.products.filter(x=>x.company_id===id),procurements:w.procurements.filter(x=>x.company_id===id),
+ courts:w.courts.filter(x=>x.company_id===id),relations:w.relations.filter(x=>x.company_a===id||x.company_b===id)};
 }
-export function median(values: number[]): number | null {
-  if (!values.length) return null;
-  const sorted = values.filter(Number.isFinite).sort((a,b) => a-b);
-  if (!sorted.length) return null;
-  const i = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[i] : (sorted[i-1] + sorted[i]) / 2;
-}
-export function productInsight(product: Product, offers: MarketOffer[]) {
-  const comparable = offers.filter(x => x.product_id === product.id && x.currency === "RUB" && x.unit_price >= 0);
-  const prices = comparable.map(x => x.unit_price);
-  const min = prices.length ? Math.min(...prices) : null;
-  return { sampleSize: comparable.length, minimum: min, median: median(prices), inStock: comparable.filter(x => x.stock_status === "in_stock").length,
-    caveat: "Предложения из загруженной выборки, не полный рынок; цены могут иметь разную комплектацию, НДС и дату." };
-}
-export function relationSignals(relations: Relation[], companies: Company[]) {
-  return relations.map(r => ({
-    ...r, left: companies.find(c => c.id === r.company_a)?.name ?? "Неизвестная компания",
-    right: companies.find(c => c.id === r.company_b)?.name ?? "Неизвестная компания",
-    conclusion: "Совпадение — индикатор для проверки, не юридическое доказательство аффилированности.",
-  }));
-}
-export function companyScope(data: Workspace, companyId: string) {
-  return { company: data.companies.find(c => c.id === companyId),
-    products: data.products.filter(p => p.company_id === companyId),
-    tenders: data.tenders.filter(t => t.company_id === companyId && !t.is_demo),
-    cases: data.cases.filter(c => c.company_id === companyId && !c.is_demo),
-    relations: data.relations.filter(r => r.company_a === companyId || r.company_b === companyId) };
-}
-export function procurementSummary(rows: Procurement[]) {
-  const list = rows.filter(x => !x.is_demo);
-  return {
-    participation: list.filter(x => x.event_type === "participation").length,
-    wins: list.filter(x => x.event_type === "win").length,
-    contracts: list.filter(x => x.event_type === "contract").length,
-    totalContracts: list.filter(x => x.event_type === "contract").reduce((a,x) => a + (x.amount ?? 0), 0),
-  };
-}
-export function courtSummary(rows: CourtCase[]) {
-  const list = rows.filter(c => !c.is_demo);
-  return { plaintiff: list.filter(c => c.role === "plaintiff").length, defendant: list.filter(c => c.role === "defendant").length, thirdParty: list.filter(c => c.role === "third_party").length,
-    claimAmount: list.reduce((a,x) => a+(x.claim_amount ?? 0),0) };
-}
+export function productOffers(w:Workspace,p:Product){return w.offers.filter(o=>o.product_id===p.id);}
+export function companyName(w:Workspace,id:string){return w.companies.find(x=>x.id===id)?.name||"Неизвестная компания";}
+export function productName(w:Workspace,id:string){return w.products.find(x=>x.id===id)?.name||"Неизвестный товар";}
+export function relationLabel(r:CompanyRelation){return ({director:"Руководитель",address:"Адрес",phone:"Телефон",email:"Email",founder:"Учредитель",other:"Другое"} as const)[r.signal_type];}

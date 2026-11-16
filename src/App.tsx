@@ -1,437 +1,297 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import type { Session } from "@supabase/supabase-js";
+import { useEffect, useMemo, useState } from "react";
+import type { User } from "@supabase/supabase-js";
 import {
-  Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, BarChart3, Building2, CheckCircle2,
-  ChevronRight, CircleAlert, Clock3, Cloud, Database, ExternalLink, FileText, FileUp, Filter,
-  Globe2, Layers3, Link2, LockKeyhole, LogIn, LogOut, Menu, Network, Package, Plus,
-  RefreshCw, Scale, Search, Settings2, ShieldCheck, Sparkles, TrendingUp, X
+  Activity, ArrowDownRight, ArrowRight, ArrowUpRight, BadgeCheck, BarChart3, Bell,
+  BookOpenCheck, BriefcaseBusiness, Building2, ChartNoAxesCombined, Check, ChevronDown,
+  ChevronRight, CircleAlert, Database, FileDown, FileSearch, FileUp, Filter, Globe2,
+  Layers3, LayoutDashboard, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Network,
+  Package, Plus, RefreshCw, Scale, Search, ShieldCheck, SlidersHorizontal, Sparkles, X
 } from "lucide-react";
-import type { BankCard, Company, CourtCase, EntityTable, ImportPreview, MarketOffer, Page, Product, Procurement, Provider, Relation, SearchResponse, Workspace } from "./types";
-import { EMPTY_WORKSPACE } from "./types";
-import { companyScope, courtSummary, median, money, procurementSummary, productInsight, relationSignals, safeUrl, sourceLabel, statistics, validInn } from "./lib/analytics";
-import { csvRows, fromCsv, fromXml, sampleCsv } from "./lib/importers";
-import { cloud, connectionChecks, deleteRecord, fetchWorkspace, getProviders, lookupCompany, saveRecord } from "./lib/supabase";
-import "./styles.css";
+import { EntityForm } from "./components/EntityForm";
+import { ResearchPanel, type OfficialCompany } from "./components/ResearchPanel";
+import { automaticSignals, companyContext, companyName, marketStats, procurementMetrics, productName, productOffers, relationLabel, summary } from "./lib/analytics";
+import { parseCsv, field as csvField } from "./lib/csv";
+import { insertRow, loadWorkspace } from "./lib/data";
+import { DEMO } from "./lib/demo";
+import { configured, researchEndpoint, supabase } from "./lib/supabase";
+import type { Company, EntityKind, EvidenceStatus, View, Workspace } from "./lib/types";
+import { EMPTY_WORKSPACE } from "./lib/types";
+import { currency, dateLabel, downloadCsv, safeHttpUrl, toCsv, validInn } from "./lib/validation";
 
-const NAV: {id:Page;label:string;short:string;icon:typeof Building2}[]=[
-  {id:"overview",label:"Обзор платформы",short:"Обзор",icon:Layers3},
-  {id:"companies",label:"Компании",short:"Компании",icon:Building2},
-  {id:"products",label:"Продукция и остатки",short:"Товары",icon:Package},
-  {id:"tenders",label:"Закупки и договоры",short:"Закупки",icon:FileText},
-  {id:"courts",label:"Судебные дела",short:"Суды",icon:Scale},
-  {id:"market",label:"Анализ рынка",short:"Рынок",icon:BarChart3},
-  {id:"relations",label:"Аффилированность",short:"Связи",icon:Network},
-  {id:"sources",label:"Реестры и источники",short:"Источники",icon:Globe2},
-  {id:"import",label:"Импорт реестров",short:"Импорт",icon:FileUp},
-  {id:"settings",label:"Настройки системы",short:"Система",icon:Settings2},
+type Provider = { id:string; name:string; status:string; scope:string; reason:string; url:string };
+const menu:{id:View;name:string;icon:typeof LayoutDashboard}[]=[
+ {id:"overview",name:"Обзор",icon:LayoutDashboard},{id:"companies",name:"Компании",icon:Building2},
+ {id:"products",name:"Товары и цены",icon:Package},{id:"procurements",name:"Закупки",icon:BriefcaseBusiness},
+ {id:"courts",name:"Судебные дела",icon:Scale},{id:"relations",name:"Связи компаний",icon:Network},
+ {id:"sources",name:"Источники данных",icon:Database},{id:"imports",name:"Импорт",icon:FileUp}
 ];
-type FormKind="company"|"product"|"tender"|"case"|"offer"|"relation";
-type FormField={key:string;label:string;type?:"text"|"url"|"date"|"number"|"select";required?:boolean;options?:{value:string;label:string}[];placeholder?:string};
-type ModalForm={kind:FormKind;id?:string};
-type Notice={message:string;error?:boolean}|null;
-const KIND_TABLE:Record<FormKind,EntityTable>={company:"na2_companies",product:"na2_products",tender:"na2_procurements",case:"na2_court_cases",offer:"na2_market_offers",relation:"na2_company_relations"};
-const KIND_TITLE:Record<FormKind,string>={company:"Компания",product:"Товар",tender:"Закупочное событие",case:"Судебная запись",offer:"Рыночное предложение",relation:"Сигнал связи"};
-const DEMO={
- companies:[
-  {id:"dc1",user_id:"DEMO",name:"ООО «Северный образец»",inn:"ДЕМО-001",ogrn:null,region:"Самарская область",activity:"Полиграфия",website:null,source_url:null,source_provider:"demo",verification_status:"unverified",checked_at:null},
-  {id:"dc2",user_id:"DEMO",name:"ООО «Волжский пример»",inn:"ДЕМО-002",ogrn:null,region:"Нижегородская область",activity:"Канцтовары",website:null,source_url:null,source_provider:"demo",verification_status:"unverified",checked_at:null},
-  {id:"dc3",user_id:"DEMO",name:"ООО «Модуль-тест»",inn:"ДЕМО-003",ogrn:null,region:"Самарская область",activity:"Электрооборудование",website:null,source_url:null,source_provider:"demo",verification_status:"unverified",checked_at:null},
- ] as Company[],
- products:[
-  {id:"dp1",user_id:"DEMO",company_id:"dc1",name:"Бланк А4, бумага 120 г/м²",category:"Полиграфия",unit:"шт",sku:"DEMO-BL-A4",availability:"in_stock",stock_qty:4000,source_url:null,source_date:null},
-  {id:"dp2",user_id:"DEMO",company_id:"dc2",name:"Ежедневник А5, синий",category:"Канцтовары",unit:"шт",sku:"DEMO-DI-5",availability:"on_request",stock_qty:null,source_url:null,source_date:null},
-  {id:"dp3",user_id:"DEMO",company_id:"dc3",name:"Кабель силовой",category:"Электрика",unit:"м",sku:"DEMO-CAB",availability:"unknown",stock_qty:null,source_url:null,source_date:null},
- ] as Product[],
- tenders:[
-  {id:"dt1",user_id:"DEMO",company_id:"dc1",procedure_number:"DEMO-223-001",customer:"Учебный заказчик",event_type:"participation",law:"223-FZ",amount:75000,occurred_at:"2026-09-12",source_url:null,source_provider:"demo",verification_status:"unverified",is_demo:false},
-  {id:"dt2",user_id:"DEMO",company_id:"dc1",procedure_number:"DEMO-223-001",customer:"Учебный заказчик",event_type:"contract",law:"223-FZ",amount:64000,occurred_at:"2026-10-02",source_url:null,source_provider:"demo",verification_status:"unverified",is_demo:false},
-  {id:"dt3",user_id:"DEMO",company_id:"dc2",procedure_number:"DEMO-44-002",customer:"Учебный муниципальный заказчик",event_type:"win",law:"44-FZ",amount:139000,occurred_at:"2026-10-14",source_url:null,source_provider:"demo",verification_status:"unverified",is_demo:false},
- ] as Procurement[],
- cases:[
-  {id:"dcase1",user_id:"DEMO",company_id:"dc2",case_number:"ДЕМО-А40/2026",court_name:"Учебный арбитражный суд",role:"plaintiff",stage:"Рассматривается",claim_amount:120000,filed_at:"2026-09-08",source_url:null,source_provider:"demo",verification_status:"unverified",is_demo:false},
- ] as CourtCase[],
- offers:[
-  {id:"do1",user_id:"DEMO",product_id:"dp1",seller_name:"Поставщик А (ДЕМО)",unit_price:16.4,currency:"RUB",stock_status:"in_stock",observed_at:"2026-11-10",source_url:null,verification_status:"unverified"},
-  {id:"do2",user_id:"DEMO",product_id:"dp1",seller_name:"Поставщик Б (ДЕМО)",unit_price:18.8,currency:"RUB",stock_status:"on_request",observed_at:"2026-11-11",source_url:null,verification_status:"unverified"},
-  {id:"do3",user_id:"DEMO",product_id:"dp1",seller_name:"Поставщик В (ДЕМО)",unit_price:21.2,currency:"RUB",stock_status:"unknown",observed_at:"2026-11-12",source_url:null,verification_status:"unverified"},
-  {id:"do4",user_id:"DEMO",product_id:"dp2",seller_name:"Поставщик Г (ДЕМО)",unit_price:540,currency:"RUB",stock_status:"in_stock",observed_at:"2026-11-10",source_url:null,verification_status:"unverified"},
- ] as MarketOffer[],
- relations:[
-  {id:"dr1",user_id:"DEMO",company_a:"dc1",company_b:"dc2",signal_type:"address",signal_value:"Учебное совпадение адреса",source_url:null,verification_status:"unverified"},
- ] as Relation[],
-} satisfies Workspace;
-const SOURCE_LINKS=[
- {id:"fns",name:"ФНС · Прозрачный бизнес",url:"https://pb.nalog.ru/",summary:"Юридические лица, ЕГРЮЛ"},
- {id:"eis",name:"ЕИС · Закупки",url:"https://zakupki.gov.ru/",summary:"44-ФЗ, 223-ФЗ, контракты"},
- {id:"kad",name:"КАД Арбитр",url:"https://kad.arbitr.ru/",summary:"Арбитражные дела"},
- {id:"fedresurs",name:"Федресурс",url:"https://fedresurs.ru/",summary:"Юридически значимые сведения"},
- {id:"fssp",name:"ФССП",url:"https://fssp.gov.ru/iss/ip/",summary:"Исполнительные производства"},
- {id:"gisp",name:"ГИСП",url:"https://gisp.gov.ru/",summary:"Российские производители и продукция"},
+const kindLabels:{[K in EntityKind]:string}={company:"Компания",product:"Продукция",procurement:"Закупочная запись",court:"Судебное дело",offer:"Ценовое предложение"};
+const statuses:Record<EvidenceStatus,string>={unverified:"Не проверено",source_linked:"Ссылка на источник",user_verified:"Сверено пользователем",official_verified:"Официально подтверждено"};
+const fallbackProviders:Provider[]=[
+{id:"cbr",name:"Банк России",status:"live_partial",scope:"Финансовые организации",reason:"Реальный поиск карточек отдельных банков по ИНН и ОГРН.",url:"https://www.cbr.ru/finorg/"},
+{id:"fns",name:"ФНС / ЕГРЮЛ",status:"manual",scope:"Регистрация, руководство и ОКВЭД",reason:"Официальный портал; полный автоматический доступ отдельно.",url:"https://egrul.nalog.gov.ru/"},
+{id:"eis",name:"ЕИС",status:"credentials_required",scope:"44-ФЗ и 223-ФЗ",reason:"Нужен разрешённый интеграционный доступ к реестрам.",url:"https://zakupki.gov.ru/"},
+{id:"kad",name:"КАД Арбитр",status:"licensed_or_manual",scope:"Арбитражные дела",reason:"Прямой официальный массовый API не подключён.",url:"https://kad.arbitr.ru/"}
 ];
-function localDate(){return new Date().toISOString().slice(0,10);}
-function prettyDay(x:string|null|undefined){return x?new Date(x+"T12:00:00").toLocaleDateString("ru-RU"):"—";}
-function emptyText(v:string|null|undefined){return v?.trim()||"Не указано";}
-function statusName(x:string){return ({in_stock:"В наличии",on_request:"Под заказ",out_of_stock:"Нет в наличии",unknown:"Не подтверждено"} as Record<string,string>)[x]||"Не подтверждено";}
-function eventName(e:string){return ({participation:"Участие",win:"Заявлена победа",contract:"Договор",other:"Не определено"} as Record<string,string>)[e]||"Не определено";}
-function roleName(x:string){return ({plaintiff:"Истец",defendant:"Ответчик",third_party:"Третье лицо",other:"Иная роль",unknown:"Не определена"} as Record<string,string>)[x]||"Не определена";}
-function fileSave(content:string,filename:string){const blob=new Blob([content],{type:"text/csv;charset=utf-8"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1200);}
-function csvCell(v:unknown){let a=String(v??"");if(/^[\s\0-\x1f]*[=+@-]/.test(a))a="'"+a;return '"'+a.replace(/"/g,'""')+'"';}
-function csvExport(columns:string[],rows:unknown[][],filename:string){fileSave("\uFEFF"+[columns,...rows].map(r=>r.map(csvCell).join(";")).join("\r\n"),filename);}
-const providerStatus=(code:string)=>code==="live_partial"?"Частичный API":code==="manual"?"Сайт / ручная проверка":code==="credentials_required"?"Требуется доступ":code==="licensed_or_manual"?"API по договору":"Не подключено";
-
-function Badge({children,tone="muted"}:{children:ReactNode;tone?:"muted"|"positive"|"warning"|"blue"|"gold"}){
- return <span className={"badge badge-"+tone}>{children}</span>;
+function Evidence({status,source}:{status?:EvidenceStatus;source?:string|null}){
+ const value=status==="official_verified"?"official":status==="user_verified"?"verified":status==="source_linked"?"linked":"unknown";
+ return <span className={"evidence "+value}>{value==="official"?<BadgeCheck size={12}/>:value==="verified"?<Check size={12}/>:value==="linked"?<Link2 size={12}/>:<CircleAlert size={12}/>} {statuses[status||"unverified"]}{source&&!safeHttpUrl(source)?" · URL недействителен":""}</span>;
 }
-function SourceBadge({status}:{status:string}) {
- return <Badge tone={status==="official_verified"?"positive":status==="user_verified"?"blue":"warning"}>{sourceLabel(status)}</Badge>;
+function Metric({label,value,sub,icon:Icon,trend}:{label:string;value:string|number;sub:string;icon:typeof LayoutDashboard;trend?:string}){
+ return <div className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon"><Icon size={18}/></span></div><div className="metric-num">{value}</div><div className="metric-bottom">{trend&&<strong>{trend}</strong>}{sub}</div></div>;
 }
-function Empty({icon:Icon=Layers3,title,detail,action}:{icon?:typeof Building2;title:string;detail:string;action?:ReactNode}){
- return <div className="empty-state"><div className="empty-icon"><Icon size={23}/></div><h3>{title}</h3><p>{detail}</p>{action&&<div className="empty-action">{action}</div>}</div>;
+function Empty({heading,copy}:{heading:string;copy:string}){return <div className="empty-state"><div className="empty-ill"><Layers3 size={28}/></div><h3>{heading}</h3><p>{copy}</p></div>}
+function SectionTop({kicker,title,subtitle,action}:{kicker:string;title:string;subtitle:string;action?:React.ReactNode}){
+ return <div className="section-heading"><div><span className="eyebrow">{kicker}</span><h1>{title}</h1><p>{subtitle}</p></div>{action}</div>;
 }
-function Stat({title,value,note,icon:Icon}:{title:string;value:string|number;note:string;icon:typeof Building2}){
- return <div className="stat-card"><span className="stat-icon"><Icon size={19}/></span><span className="stat-value">{value}</span><strong>{title}</strong><small>{note}</small></div>;
-}
-function PageHead({eyebrow,title,description,action}:{eyebrow:string;title:string;description:string;action?:ReactNode}){
- return <div className="page-head"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action&&<div className="page-action">{action}</div>}</div>;
-}
-function Section({title,info,action,children,className=""}:{title:string;info?:string;action?:ReactNode;children:ReactNode;className?:string}){
- return <section className={"panel "+className}><div className="section-head"><div><h2>{title}</h2>{info&&<p>{info}</p>}</div>{action}</div>{children}</section>;
-}
-function InlineLink({url,children}:{url?:string|null;children:ReactNode}){
- const to=safeUrl(url);return to?<a className="inline-link" href={to} target="_blank" rel="noopener noreferrer">{children}<ArrowUpRight size={13}/></a>:<span className="text-dim">Источник не указан</span>;
-}
-function Action({children,onClick,variant="secondary",disabled=false,icon:Icon}:{children:ReactNode;onClick?:()=>void;variant?:"primary"|"secondary"|"ghost"|"gold";disabled?:boolean;icon?:typeof Building2}){
- return <button type="button" className={"action action-"+variant} onClick={onClick} disabled={disabled}>{Icon&&<Icon size={16}/>}<span>{children}</span></button>;
-}
-function Field({field,value,onChange}:{field:FormField;value:string;onChange:(value:string)=>void}){
- return <label className="form-field"><span>{field.label}{field.required&&<i>*</i>}</span>{field.type==="select"?<select value={value} onChange={e=>onChange(e.target.value)} required={field.required}><option value="">Выберите</option>{field.options?.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select>:<input type={field.type||"text"} value={value} onChange={e=>onChange(e.target.value)} required={field.required} step={field.type==="number"?"any":undefined} min={field.type==="number"?"0":undefined} placeholder={field.placeholder||field.label}/>}</label>;
-}
-function FormFields(kind:FormKind,data:Workspace):FormField[]{
- const companies=data.companies.map(x=>({value:x.id,label:x.name}));
- const products=data.products.map(x=>({value:x.id,label:x.name}));
- if(kind==="company")return [
-  {key:"inn",label:"ИНН",required:true,placeholder:"10 или 12 цифр"},
-  {key:"name",label:"Название организации",required:true},
-  {key:"ogrn",label:"ОГРН / ОГРНИП"},
-  {key:"region",label:"Регион"},
-  {key:"activity",label:"Основной вид деятельности"},
-  {key:"website",label:"Сайт компании",type:"url"},
-  {key:"source_url",label:"Ссылка на источник",type:"url"},
- ];
- if(kind==="product")return [
-  {key:"company_id",label:"Компания",type:"select",options:companies,required:true},
-  {key:"name",label:"Наименование товара",required:true},
-  {key:"category",label:"Категория"},
-  {key:"unit",label:"Единица измерения",placeholder:"шт"},
-  {key:"sku",label:"Артикул"},
-  {key:"availability",label:"Наличие",type:"select",required:true,options:[{value:"unknown",label:"Неизвестно"},{value:"in_stock",label:"В наличии"},{value:"on_request",label:"Под заказ"},{value:"out_of_stock",label:"Нет в наличии"}]},
-  {key:"stock_qty",label:"Остаток",type:"number"},
-  {key:"source_url",label:"Ссылка на карточку товара",type:"url"},
- ];
- if(kind==="tender")return [
-  {key:"company_id",label:"Поставщик",type:"select",required:true,options:companies},
-  {key:"procedure_number",label:"Номер процедуры / договора",required:true},
-  {key:"customer",label:"Заказчик"},
-  {key:"event_type",label:"Тип события",type:"select",required:true,options:[{value:"participation",label:"Участие"},{value:"win",label:"Заявлена победа"},{value:"contract",label:"Договор"},{value:"other",label:"Не определено"}]},
-  {key:"law",label:"Закон",type:"select",options:[{value:"unknown",label:"Не определён"},{value:"44-FZ",label:"44-ФЗ"},{value:"223-FZ",label:"223-ФЗ"},{value:"other",label:"Другое"}]},
-  {key:"amount",label:"Сумма, ₽",type:"number"},
-  {key:"occurred_at",label:"Дата",type:"date"},
-  {key:"source_url",label:"URL документа",type:"url"},
- ];
- if(kind==="case")return [
-  {key:"company_id",label:"Компания",type:"select",required:true,options:companies},
-  {key:"case_number",label:"Номер дела",required:true},
-  {key:"court_name",label:"Суд"},
-  {key:"role",label:"Роль компании",type:"select",required:true,options:[{value:"unknown",label:"Не определена"},{value:"plaintiff",label:"Истец"},{value:"defendant",label:"Ответчик"},{value:"third_party",label:"Третье лицо"},{value:"other",label:"Другая"}]},
-  {key:"stage",label:"Стадия"},
-  {key:"claim_amount",label:"Сумма требований, ₽",type:"number"},
-  {key:"filed_at",label:"Дата",type:"date"},
-  {key:"source_url",label:"Ссылка на карточку дела",type:"url"},
- ];
- if(kind==="offer")return [
-  {key:"product_id",label:"Товар",type:"select",required:true,options:products},
-  {key:"seller_name",label:"Продавец",required:true},
-  {key:"unit_price",label:"Цена за единицу, ₽",type:"number",required:true},
-  {key:"stock_status",label:"Наличие",type:"select",options:[{value:"unknown",label:"Неизвестно"},{value:"in_stock",label:"В наличии"},{value:"on_request",label:"Под заказ"},{value:"out_of_stock",label:"Нет"}]},
-  {key:"observed_at",label:"Дата проверки",type:"date"},
-  {key:"source_url",label:"Ссылка на предложение",type:"url"},
- ];
- return [
-  {key:"company_a",label:"Компания А",type:"select",required:true,options:companies},
-  {key:"company_b",label:"Компания Б",type:"select",required:true,options:companies},
-  {key:"signal_type",label:"Признак",type:"select",required:true,options:[{value:"director",label:"Общий руководитель"},{value:"address",label:"Совпадение адреса"},{value:"phone",label:"Телефон"},{value:"email",label:"Email"},{value:"founder",label:"Учредитель"},{value:"other",label:"Другое"}]},
-  {key:"signal_value",label:"Значение признака"},
-  {key:"source_url",label:"Документ / источник",type:"url"},
- ];
-}
-function decodeDataFile(file:File):Promise<string>{
- return file.arrayBuffer().then(buffer=>{
-  const bytes=new Uint8Array(buffer);
-  const prefix=new TextDecoder("iso-8859-1").decode(bytes.slice(0,200));
-  const declared=prefix.match(/<\?xml[^>]*encoding=["']([^"']+)/i)?.[1]||"";
-  let charset=file.name.toLowerCase().endsWith(".xml")?declared.toLowerCase()||"utf-8":"utf-8";
-  if(charset==="cp1251")charset="windows-1251";
-  if(!["utf-8","utf8","windows-1251","utf-16","utf-16le","utf-16be"].includes(charset))throw new Error("Неподдерживаемая кодировка XML");
-  return new TextDecoder(charset,{fatal:true}).decode(bytes);
- });
-}
-function makeError(e:unknown){return e instanceof Error?e.message:String(e);}
+function SourceLink({url}:{url?:string|null}){const safe=safeHttpUrl(url);return safe?<a className="source-link" target="_blank" rel="noopener noreferrer" href={safe}>Источник <ArrowUpRight size={14}/></a>:<span className="missing-source">Источник не указан</span>}
+function MiniColumns({values}:{values:number[]}){const mx=Math.max(1,...values);return <div className="mini-bars">{values.map((v,i)=><div key={i} className={"mini-bar b"+i%3} style={{height:String(Math.max(7,v/mx*100))+"%"}}/>)}</div>}
 
 export default function App(){
- const [page,setPage]=useState<Page>("overview");
- const [mobileNav,setMobileNav]=useState(false);
- const [session,setSession]=useState<Session|null>(null);
- const [authOpen,setAuthOpen]=useState(false);
- const [authSignup,setAuthSignup]=useState(false);
- const [authEmail,setAuthEmail]=useState("");
- const [authPassword,setAuthPassword]=useState("");
- const [authBusy,setAuthBusy]=useState(false);
- const [data,setData]=useState<Workspace>(EMPTY_WORKSPACE);
- const [demo,setDemo]=useState(true);
+ const [view,setView]=useState<View>("overview");
+ const [user,setUser]=useState<User|null>(null);
+ const [mode,setMode]=useState<"demo"|"cloud">("demo");
+ const [workspace,setWorkspace]=useState<Workspace>(EMPTY_WORKSPACE);
  const [loading,setLoading]=useState(false);
- const [notice,setNotice]=useState<Notice>(null);
- const [providers,setProviders]=useState<Provider[]>([]);
- const [providersError,setProvidersError]=useState("");
- const [query,setQuery]=useState("");
- const [companyId,setCompanyId]=useState("");
- const [productId,setProductId]=useState("");
- const [searchInn,setSearchInn]=useState("7707083893");
- const [searchOgrn,setSearchOgrn]=useState("");
- const [searchResult,setSearchResult]=useState<SearchResponse|null>(null);
- const [researchBusy,setResearchBusy]=useState(false);
- const [form,setForm]=useState<ModalForm|null>(null);
- const [draft,setDraft]=useState<Record<string,string>>({});
  const [saving,setSaving]=useState(false);
- const [importType,setImportType]=useState<ImportPreview["type"]>("companies");
- const [preview,setPreview]=useState<ImportPreview|null>(null);
- const [importBusy,setImportBusy]=useState(false);
- const [diagnostics,setDiagnostics]=useState<{name:string,ok:boolean,message:string}[]|null>(null);
- const [diagnosticsBusy,setDiagnosticsBusy]=useState(false);
- const [tenderKind,setTenderKind]=useState("all");
- const [courtRole,setCourtRole]=useState("all");
- const [sourceFilter,setSourceFilter]=useState("all");
+ const [form,setForm]=useState<EntityKind|null>(null);
+ const [authOpen,setAuthOpen]=useState(false);
+ const [authMode,setAuthMode]=useState<"signin"|"signup">("signin");
+ const [authError,setAuthError]=useState("");
+ const [email,setEmail]=useState("");const [password,setPassword]=useState("");
+ const [toast,setToast]=useState("");
+ const [companyQuery,setCompanyQuery]=useState("");
+ const [selectedCompany,setSelectedCompany]=useState("");
  const [selectedProduct,setSelectedProduct]=useState("");
- const current=demo?DEMO:data;
- const stats=useMemo(()=>statistics(current),[current]);
- const lookup=useCallback((id:string)=>current.companies.find(x=>x.id===id)?.name||"Неизвестная компания",[current.companies]);
- const notify=(message:string,error=false)=>{setNotice({message,error});};
- const navigate=(id:Page)=>{setPage(id);setMobileNav(false);window.scrollTo({top:0,behavior:"smooth"});};
- const load=useCallback(async()=>{
-  if(!cloud)return;
-  setLoading(true);
-  try{setData(await fetchWorkspace());}
-  catch(e){setNotice({message:"Ошибка синхронизации: "+makeError(e),error:true});}
-  finally{setLoading(false);}
+ const [procFilter,setProcFilter]=useState("all");const [courtFilter,setCourtFilter]=useState("all");
+ const [providers,setProviders]=useState<Provider[]>([]);
+ const [providerError,setProviderError]=useState("");
+ const [mobileNav,setMobileNav]=useState(false);
+ const [importKind,setImportKind]=useState<EntityKind>("company");
+ const [importRows,setImportRows]=useState<Record<string,string>[]>([]);
+ const [importFilename,setImportFilename]=useState("");
+ const [importErrors,setImportErrors]=useState<string[]>([]);
+ const dataset=mode==="demo"?DEMO:workspace;
+ const metrics=useMemo(()=>summary(dataset),[dataset]);
+ const isDemo=mode==="demo";
+ const signedIn=Boolean(user);
+ const signalPairs=useMemo(()=>automaticSignals(dataset.companies),[dataset.companies]);
+ const proc=useMemo(()=>procurementMetrics(dataset.procurements.map(x=>isDemo?{...x,is_demo:false}:x)),[dataset.procurements,isDemo]);
+ const pageTitle=menu.find(x=>x.id===view)?.name||"Обзор";
+
+ useEffect(()=>{
+  if(!supabase)return;
+  let active=true;
+  void supabase.auth.getSession().then(({data})=>{if(!active)return;setUser(data.session?.user||null);if(data.session?.user)setMode("cloud");});
+  const listener=supabase.auth.onAuthStateChange((_event,session)=>{if(!active)return;setUser(session?.user||null);if(session?.user)setMode("cloud");else setMode("demo");});
+  return()=>{active=false;listener.data.subscription.unsubscribe()};
  },[]);
  useEffect(()=>{
-  if(!cloud)return;
-  void cloud.auth.getSession().then(r=>setSession(r.data.session));
-  const {data:sub}=cloud.auth.onAuthStateChange((_event,s)=>setSession(s));
-  return ()=>sub.subscription.unsubscribe();
+  if(!user||mode!=="cloud")return;
+  let active=true;setLoading(true);
+  void loadWorkspace().then(data=>{if(active)setWorkspace(data)}).catch(e=>{if(active)notify(String(e))}).finally(()=>{if(active)setLoading(false)});
+  return()=>{active=false};
+ },[user?.id,mode]);
+ useEffect(()=>{
+  if(!researchEndpoint.startsWith("https://"))return;
+  let active=true;
+  void fetch(researchEndpoint+"?mode=providers",{cache:"no-store"}).then(async r=>{if(!r.ok)throw new Error("Источники недоступны");return r.json()})
+  .then((d:{providers?:Provider[]})=>{if(active&&Array.isArray(d.providers))setProviders(d.providers)})
+  .catch(()=>{if(active)setProviderError("Серверный реестр не ответил. Ниже — справочные статусы.")});
+  return()=>{active=false};
  },[]);
- useEffect(()=>{if(session){setDemo(false);void load();}else{setData(EMPTY_WORKSPACE);setDemo(true);}},[session?.user.id,load]);
- useEffect(()=>{void getProviders().then(setProviders).catch(e=>setProvidersError(makeError(e)));},[]);
- useEffect(()=>{if(!notice)return;const t=setTimeout(()=>setNotice(null),5500);return()=>clearTimeout(t);},[notice]);
- const selectedCompany=current.companies.find(x=>x.id===companyId);
- const chosenProduct=current.products.find(x=>x.id===(selectedProduct||productId));
- function startForm(kind:FormKind,item?:Record<string,unknown>){
-  if(!session){setAuthOpen(true);notify("Для сохранения войди в тестовый аккаунт");return;}
-  if(demo){notify("Выйди из деморежима для записи в облако");return;}
-  const now:Record<string,string>={};
-  for(const [key,value] of Object.entries(item||{}))now[key]=value==null?"":String(value);
-  if(kind==="product"&&!now.company_id)now.company_id=companyId;
-  if(kind==="tender"&&!now.company_id)now.company_id=companyId;
-  if(kind==="case"&&!now.company_id)now.company_id=companyId;
-  if(kind==="offer"&&!now.product_id)now.product_id=selectedProduct||productId;
-  if(kind==="offer"&&!now.observed_at)now.observed_at=localDate();
-  if(kind==="offer"&&!now.stock_status)now.stock_status="unknown";
-  if(kind==="tender"&&!now.event_type)now.event_type="other";
-  if(kind==="tender"&&!now.law)now.law="unknown";
-  if(kind==="case"&&!now.role)now.role="unknown";
-  if(kind==="product"&&!now.availability)now.availability="unknown";
-  setDraft(now);setForm({kind,id:typeof item?.id==="string"?item.id:undefined});
+ useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(""),6000);return()=>clearTimeout(t)},[toast]);
+ function notify(message:string){setToast(message.slice(0,260))}
+ async function refresh(){
+  if(!user||mode!=="cloud")return;
+  setLoading(true);
+  try{setWorkspace(await loadWorkspace());notify("Данные обновлены из Supabase")}catch(e){notify(e instanceof Error?e.message:String(e))}
+  finally{setLoading(false)}
  }
- async function submitForm(event:FormEvent<HTMLFormElement>){
-  event.preventDefault();
-  if(!form||!session)return;
-  const kind=form.kind,fields=FormFields(kind,data),row:Record<string,unknown>={};
-  for(const field of fields){
-   const value=(draft[field.key]||"").trim();
-   row[field.key]=field.type==="number"?(value?Number(value):null):value||null;
-  }
-  if(form.id)row.id=form.id;
-  if(kind==="company"){
-   if(!validInn(String(row.inn||""))){notify("ИНН не прошёл контрольную сумму",true);return;}
-   row.source_provider="manual";row.verification_status=row.source_url?"source_linked":"unverified";
-   row.region=row.region||"";row.activity=row.activity||"";
-  }
-  if(kind==="product"){row.unit=row.unit||"шт";row.availability=row.availability||"unknown";}
-  if(kind==="tender"){row.event_type=row.event_type||"other";row.law=row.law||"unknown";row.customer=row.customer||"";row.source_provider="manual";row.verification_status=row.source_url?"source_linked":"unverified";row.is_demo=false;}
-  if(kind==="case"){row.role=row.role||"unknown";row.stage=row.stage||"unknown";row.court_name=row.court_name||"";row.source_provider="manual";row.verification_status=row.source_url?"source_linked":"unverified";row.is_demo=false;}
-  if(kind==="offer"){row.currency="RUB";row.stock_status=row.stock_status||"unknown";row.observed_at=row.observed_at||localDate();row.verification_status=row.source_url?"source_linked":"unverified";}
-  if(kind==="relation"){if(row.company_a===row.company_b){notify("Нужны две разные компании",true);return;}row.signal_value=row.signal_value||"";row.verification_status=row.source_url?"source_linked":"unverified";}
-  const link=row.source_url??row.website;
-  if(link&&!safeUrl(String(link))){notify("Используй ссылку http:// или https://",true);return;}
+ function openForm(kind:EntityKind){
+  if(isDemo||!user){setAuthOpen(true);notify("В демо изменения не сохраняются. Войдите, чтобы работать со своей базой.");return;}
+  if(kind!=="company"&&kind!=="offer"&&dataset.companies.length===0){setView("companies");notify("Сначала добавьте компанию");return;}
+  if(kind==="offer"&&dataset.products.length===0){setView("products");notify("Сначала добавьте товар");return;}
+  setForm(kind);
+ }
+ async function saveForm(kind:EntityKind,row:Record<string,unknown>){
+  if(!user)throw new Error("Требуется авторизация");
+  if(mode!=="cloud")throw new Error("Переключитесь в личную базу");
   setSaving(true);
+  try{await insertRow(kind,user.id,row);setWorkspace(await loadWorkspace());notify(kindLabels[kind]+" добавлена");}
+  finally{setSaving(false)}
+ }
+ async function handleAuth(){
+  if(!supabase){setAuthError("Не настроен Supabase");return;}
+  if(password.length<6){setAuthError("Пароль должен содержать не менее 6 символов");return;}
+  setSaving(true);setAuthError("");
   try{
-   await saveRecord(KIND_TABLE[kind],row,session.user.id);
-   await load();setForm(null);notify("Сохранено в Supabase STAGING");
-  }catch(e){notify("Не удалось сохранить: "+makeError(e),true);}
-  finally{setSaving(false);}
- }
- async function removeRow(kind:FormKind,id:string){
-  if(!session||demo)return;
-  if(!window.confirm("Удалить запись? Это действие нельзя отменить."))return;
-  try{await deleteRecord(KIND_TABLE[kind],id,session.user.id);await load();notify("Запись удалена");}
-  catch(e){notify("Ошибка удаления: "+makeError(e),true);}
- }
- async function authSubmit(e:FormEvent<HTMLFormElement>){
-  e.preventDefault();if(!cloud){notify("Облачная конфигурация ещё не настроена",true);return;}
-  setAuthBusy(true);
-  try{
-   const result=authSignup?await cloud.auth.signUp({email:authEmail,password:authPassword}):await cloud.auth.signInWithPassword({email:authEmail,password:authPassword});
-   if(result.error)throw result.error;
-   setAuthOpen(false);setAuthPassword("");notify(authSignup?"Аккаунт создан. Если требуется, подтверди email.":"Вход выполнен");
-  }catch(e){notify(makeError(e),true);}finally{setAuthBusy(false);}
- }
- async function runResearch(inn=searchInn,ogrn=searchOgrn){
-  if(!validInn(inn)){notify("Неверный ИНН",true);return;}
-  if(ogrn&&!/^\d{13}$/.test(ogrn)){notify("Для поиска по Банку России укажи ОГРН из 13 цифр",true);return;}
-  setResearchBusy(true);setSearchResult(null);setSearchInn(inn);setSearchOgrn(ogrn);
-  try{const found=await lookupCompany(inn,ogrn);setSearchResult(found.source);}
-  catch(e){notify("Поиск: "+makeError(e),true);}
-  finally{setResearchBusy(false);}
- }
- async function saveOfficial(card:BankCard){
-  if(!session){setAuthOpen(true);return;}
-  if(!card.verified||!validInn(card.inn)||!safeUrl(card.sourceUrl)){notify("Источник не прошёл проверку",true);return;}
-  setSaving(true);
-  try{
-   const row={inn:card.inn,ogrn:card.ogrn,name:card.name,region:card.region||"",activity:"Финансовые услуги",website:safeUrl(card.site),source_url:card.sourceUrl,source_provider:"cbr",verification_status:"official_verified",checked_at:card.retrievedAt||new Date().toISOString()};
-   const {error}=await cloud!.from("na2_companies").upsert({...row,user_id:session.user.id},{onConflict:"user_id,inn"});
+   const {error,data}=authMode==="signin"?await supabase.auth.signInWithPassword({email,password}):await supabase.auth.signUp({email,password});
    if(error)throw error;
-   await load();setDemo(false);navigate("companies");notify("Карточка подтверждённой организации сохранена");
-  }catch(e){notify("Ошибка сохранения: "+makeError(e),true);}
-  finally{setSaving(false);}
+   if(authMode==="signup"&&!data.session){setAuthError("Регистрация создана. Подтвердите email по письму, затем войдите.");return;}
+   setAuthOpen(false);setPassword("");setMode("cloud");notify("Выполнен вход в NEXUS");
+  }catch(e){setAuthError(e instanceof Error?e.message:String(e))}
+  finally{setSaving(false)}
  }
- async function importFile(file:File){
-  if(file.size>2_000_000){notify("Максимум 2 МБ на файл",true);return;}
-  try{const text=await decodeDataFile(file);const result=file.name.toLowerCase().endsWith(".xml")?fromXml(text,file.name):fromCsv(importType,text,file.name);
-   setPreview(result);if(result.errors.length)notify("Обнаружены ошибки в "+result.errors.length+" строках",true);
-  }catch(e){notify("Импорт: "+makeError(e),true);}
+ async function logout(){
+  await supabase?.auth.signOut();setMode("demo");setWorkspace(EMPTY_WORKSPACE);setAuthOpen(false);notify("Вы вышли из аккаунта");
  }
- async function commitImport(){
-  if(!session||demo){setAuthOpen(true);return;}if(!preview)return;
-  if(!window.confirm("Добавить "+preview.items.length+" непроверенных записей в тестовую базу?"))return;
-  setImportBusy(true);
-  let added=0,duplicates=0,rejected=0;const companiesByInn=new Map(data.companies.map(x=>[x.inn,x.id]));
-  try{
-   for(const item of preview.items){
-    try{
-     const row={...item};delete row.companyInn;
-     if(preview.type==="companies"){
-      const inn=String(row.inn||"");if(companiesByInn.has(inn)){duplicates++;continue;}
-      await saveRecord("na2_companies",row,session.user.id);
-      const fresh=await cloud!.from("na2_companies").select("id").eq("inn",inn).single();
-      if(fresh.error)throw fresh.error;companiesByInn.set(inn,String(fresh.data.id));
-     }else{
-      const company_id=companiesByInn.get(String(item.companyInn||""));
-      if(!company_id){rejected++;continue;}
-      row.company_id=company_id;
-      const table=KIND_TABLE[preview.type==="tenders"?"tender":preview.type==="cases"?"case":"product"];
-      await saveRecord(table,row,session.user.id);
-     }
-     added++;
-    }catch{rejected++;}
-   }
-   setPreview(null);await load();notify("Добавлено: "+added+" · пропущено: "+rejected+" · совпадений: "+duplicates);
-  }catch(e){notify(makeError(e),true);}finally{setImportBusy(false);}
+ async function saveOfficial(o:OfficialCompany){
+  if(!user)throw new Error("Сначала войдите");
+  if(!o.verified||!validInn(o.inn)||!safeHttpUrl(o.sourceUrl))throw new Error("Нельзя сохранить неподтверждённый результат");
+  if(workspace.companies.some(x=>x.inn===o.inn)){notify("Компания с этим ИНН уже в базе");return;}
+  await insertRow("company",user.id,{inn:o.inn,ogrn:o.ogrn,name:o.name,region:o.region||"",activity:"Финансовые услуги",website:safeHttpUrl(o.site),legal_address:o.address,source_url:o.sourceUrl,source_provider:"cbr",verification_status:"official_verified",checked_at:o.retrievedAt||new Date().toISOString()});
+  setWorkspace(await loadWorkspace());notify("Реквизиты сохранены с подтверждением Банка России");
  }
- async function runDiagnostics(){
-  if(!session){setAuthOpen(true);return;}
-  setDiagnosticsBusy(true);
-  try{setDiagnostics(await connectionChecks(session.user.id));}
-  catch(e){notify(makeError(e),true);}finally{setDiagnosticsBusy(false);}
+ function goto(v:View){setView(v);setMobileNav(false);window.scrollTo({top:0,behavior:"smooth"})}
+ function exportView(){
+  let headers:string[]=[],rows:unknown[][]=[];
+  if(view==="companies"){headers=["Наименование","ИНН","ОГРН","Регион","Отрасль","Источник","Проверка"];rows=dataset.companies.map(c=>[c.name,c.inn,c.ogrn,c.region,c.activity,c.source_url,c.verification_status])}
+  else if(view==="products"){headers=["Товар","Компания","Категория","Наличие","Остаток"];rows=dataset.products.map(p=>[p.name,companyName(dataset,p.company_id),p.category,p.availability,p.stock_qty])}
+  else if(view==="procurements"){headers=["Поставщик","Номер","Заказчик","Событие","Закон","Сумма","Дата","Источник"];rows=dataset.procurements.map(p=>[companyName(dataset,p.company_id),p.procedure_number,p.customer,p.event_type,p.law,p.amount,p.occurred_at,p.source_url])}
+  else if(view==="courts"){headers=["Компания","Дело","Суд","Роль","Стадия","Требования (не долг)","Источник"];rows=dataset.courts.map(c=>[companyName(dataset,c.company_id),c.case_number,c.court_name,c.role,c.stage,c.claim_amount,c.source_url])}
+  else{notify("Выберите раздел с данными");return;}
+  downloadCsv("nexus-"+view+".csv",toCsv(headers,rows));notify("Экспортировано: "+rows.length+" строк"+(isDemo?" (УЧЕБНЫЕ)":""));
  }
- const pageInfo=NAV.find(n=>n.id===page)!;
- return <div className="app-shell">
-  <aside className={"sidebar"+(mobileNav?" sidebar-open":"")}>
-   <div className="brand" onClick={()=>navigate("overview")} role="button" tabIndex={0}><span className="brand-mark">N</span><span className="brand-copy"><b>NEXUS</b><small>ANALYTICS <i>INTELLIGENCE</i></small></span></div>
-   <div className="sidebar-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
-   <nav className="sidebar-nav" aria-label="Разделы платформы">{NAV.map(n=><button type="button" key={n.id} className={"nav-item"+(page===n.id?" active":"")} onClick={()=>navigate(n.id)}><n.icon size={18}/><span>{n.label}</span>{page===n.id&&<span className="nav-current"/>}</button>)}</nav>
-   <div className="sidebar-footer"><div className="engine-state"><span className="pulse"/><span>RESEARCH ENGINE v2.0</span></div><p>Единая архитектура · Supabase STAGING</p></div>
+ async function fileChosen(file:File|null){
+  if(!file)return;
+  setImportErrors([]);setImportRows([]);setImportFilename(file.name);
+  if(file.size>1500000){setImportErrors(["Слишком большой файл (максимум 1,5 МБ)"]);return;}
+  if(!file.name.toLowerCase().endsWith(".csv")){setImportErrors(["Загрузите CSV UTF-8. XML ФНС и ЕИС пока доступны в версии v1.0."]);return;}
+  try{const parsed=parseCsv(await file.text());setImportRows(parsed);}catch(e){setImportErrors([e instanceof Error?e.message:String(e)])}
+ }
+ function csvObject(r:Record<string,string>):{kind:EntityKind,row:Record<string,unknown>}{
+  const f=(...names:string[])=>csvField(r,names);
+  const url=f("источник","source","sourceurl","ссылка");
+  if(url&&!safeHttpUrl(url))throw new Error("Некорректный URL источника");
+  const source_url=url||null;
+  if(importKind==="company"){
+   const inn=f("инн","inn");if(!validInn(inn))throw new Error("Неверный ИНН");
+   const name=f("название","наименование","name");if(!name)throw new Error("Нет названия");
+   if(dataset.companies.some(c=>c.inn===inn))throw new Error("Компания уже существует в базе");
+   return {kind:importKind,row:{inn,name,region:f("регион","region"),activity:f("отрасль","оквэд","activity"),director:f("руководитель","директор"),legal_address:f("адрес","legal_address"),source_url,source_provider:"csv",verification_status:"unverified"}};
+  }
+  if(importKind==="offer"){
+   const productNameText=f("товар","product","названиетовара");
+   const matches=dataset.products.filter(p=>p.name.toLowerCase()===productNameText.toLowerCase());
+   if(matches.length!==1)throw new Error("Нужен один существующий товар по названию");
+   const price=Number(f("цена","price","unit_price").replace(",","."));if(!Number.isFinite(price)||price<0)throw new Error("Цена не указана или некорректна");
+   return {kind:importKind,row:{product_id:matches[0].id,seller_name:f("продавец","seller")||"Поставщик из файла",unit_price:price,currency:"RUB",stock_status:"unknown",observed_at:new Date().toISOString().slice(0,10),source_url,verification_status:"unverified"}};
+  }
+  const inn=f("инн","inn","иннпоставщика","иннучастника");
+  const company=dataset.companies.find(c=>c.inn===inn);
+  if(!company)throw new Error("Сначала добавьте компанию с ИНН "+inn);
+  if(importKind==="product"){
+   const name=f("товар","название","name");if(!name)throw new Error("Нет товара");
+   return {kind:importKind,row:{company_id:company.id,name,category:f("категория","category"),unit:f("единица","unit")||"шт.",availability:"unknown",source_url}};
+  }
+  if(importKind==="procurement"){
+   const number=f("номер","номерзакупки","number");if(!number)throw new Error("Нет номера закупки");
+   const raw=f("событие","event_type","типсобытия").toLowerCase();
+   const event_type=raw==="победа"||raw==="win"?"win":raw==="договор"||raw==="contract"?"contract":raw==="участие"||raw==="participation"?"participation":"other";
+   const rawAmount=f("сумма","amount");
+   const amount=rawAmount?Number(rawAmount.replace(",",".")):null;
+   if(amount!==null&&(!Number.isFinite(amount)||amount<0))throw new Error("Неверная сумма");
+   return {kind:importKind,row:{company_id:company.id,procedure_number:number,customer:f("заказчик","customer"),event_type,law:"unknown",amount,source_url,source_provider:"csv",verification_status:"unverified",is_demo:false}};
+  }
+  const number=f("номердела","дело","case_number");
+  if(!number)throw new Error("Нет номера дела");
+  return {kind:"court",row:{company_id:company.id,case_number:number,court_name:f("суд","court"),role:"unknown",stage:f("статус","stage")||"Не установлена",source_url,source_provider:"csv",verification_status:"unverified",is_demo:false}};
+ }
+ function importPreview(){
+  const valid:{kind:EntityKind;row:Record<string,unknown>}[]=[];const errors:string[]=[];
+  importRows.forEach((r,i)=>{try{valid.push(csvObject(r))}catch(e){errors.push("Строка "+(i+2)+": "+(e instanceof Error?e.message:String(e)))}});
+  return {valid,errors};
+ }
+ async function commitCsv(){
+  if(!user||isDemo){setAuthOpen(true);return;}
+  const {valid,errors}=importPreview();
+  setImportErrors(errors);if(!valid.length){notify("Нет корректных записей");return;}
+  setSaving(true);let done=0;const failed:string[]=[];
+  try{for(const item of valid){try{await insertRow(item.kind,user.id,item.row);done++;}catch(e){failed.push(e instanceof Error?e.message:String(e))}}
+   setWorkspace(await loadWorkspace());setImportRows([]);setImportErrors([...errors,...failed].slice(0,12));notify("Загружено: "+done+"; пропущено: "+(errors.length+failed.length));
+  }finally{setSaving(false)}
+ }
+
+ const toolbar=(kind:EntityKind,label="Добавить")=><div className="toolbar"><button className="btn line" onClick={exportView}><FileDown size={16}/> Экспорт CSV</button><button className="btn primary" onClick={()=>openForm(kind)}><Plus size={16}/> {label}</button></div>;
+ const openCompany=(id:string)=>{setSelectedCompany(id);goto("companies")};
+
+ return <div className="app">
+  <aside className={"sidebar "+(mobileNav?"mobile-open":"")}>
+   <div className="brand" onClick={()=>goto("overview")} role="button" tabIndex={0} onKeyDown={e=>{if(e.key==="Enter")goto("overview")}}>
+    <div className="brand-symbol"><Layers3 size={22}/></div><div><div className="brand-name">NEXUS<span>.</span></div><div className="brand-caption">ANALYTICS INTELLIGENCE</div></div>
+   </div>
+   <div className="workspace-selector"><div className="workspace-avatar"><ChartNoAxesCombined size={18}/></div><div><small>РАБОЧАЯ СРЕДА</small><b>{isDemo?"Демонстрация":"Личное пространство"}</b></div><ChevronDown size={15}/></div>
+   <div className="nav-label">УПРАВЛЕНИЕ</div>
+   <nav className="side-menu">{menu.map(({id,name,icon:Icon})=><button key={id} className={"nav-link "+(view===id?"active":"")} onClick={()=>goto(id)}><Icon size={18}/><span>{name}</span>{view===id&&<span className="nav-active-dot"/>}</button>)}</nav>
+   <div className="sidebar-bottom"><div className="sidebar-promote"><div className="sidebar-glow"/><Sparkles size={23}/><strong>Evidence-first</strong><p>Данные, которым можно доверять, начинаются с источника.</p><button onClick={()=>goto("sources")}>Реестры и доступы <ArrowRight size={14}/></button></div><div className="sidebar-footer"><ShieldCheck size={15}/> NEXUS v2.0 · STAGING</div></div>
   </aside>
-  {mobileNav&&<button className="drawer-mask" aria-label="Закрыть меню" onClick={()=>setMobileNav(false)}/>}
-  <div className="app-main">
-   <header className="topbar"><div className="topbar-left"><button className="mobile-menu" onClick={()=>setMobileNav(true)} aria-label="Открыть меню"><Menu size={21}/></button><span className="breadcrumb">Платформа</span><ChevronRight size={13}/><b>{pageInfo.short}</b></div><div className="topbar-right"><span className="top-status"><span className={"status-dot"+(cloud?"":" offline")}/>{session?"Облако подключено":cloud?"Гостевой режим":"Не настроено"}</span><button className="top-icon" onClick={()=>void load()} disabled={!session||loading} title="Обновить"><RefreshCw size={17} className={loading?"spinning":""}/></button><button className="profile" onClick={()=>session?navigate("settings"):setAuthOpen(true)} title={session?.user.email||"Войти"}>{session?.user.email?.charAt(0).toUpperCase()||<LogIn size={18}/>}</button></div></header>
-   <main className="content">
-    {notice&&<div className={"notice"+(notice.error?" notice-error":"")} role="status"><span>{notice.error?<CircleAlert size={17}/>:<CheckCircle2 size={17}/>}</span>{notice.message}<button onClick={()=>setNotice(null)} aria-label="Закрыть"><X size={14}/></button></div>}
-    {demo&&<div className="demo-banner"><span><Sparkles size={16}/> <b>ДЕМОНСТРАЦИОННЫЕ ДАННЫЕ</b> — все компании, цены и события на экране вымышлены</span><button onClick={()=>session?setDemo(false):setAuthOpen(true)}>{session?"Перейти к моим данным":"Войти и начать"}<ArrowRight size={14}/></button></div>}
-    {session&&!demo&&<div className="workspace-line"><span><Cloud size={14}/> Персональная база Supabase, данные защищены RLS</span><button onClick={()=>setDemo(true)}>Показать демо</button></div>}
-    {page==="overview"&&<>
-      <div className="hero"><div className="hero-copy"><div className="hero-eyebrow"><span className="hero-signal"/>NEXUS / RESEARCH OS / v2.0</div><h1>Сведения превращаются<br/>в <em>точные решения.</em></h1><p>Проверяй компании, закупки, судебные дела, продукцию и цены на рынке в одной системе. Каждый вывод — со статусом достоверности и источником.</p><div className="hero-actions"><Action variant="gold" icon={Search} onClick={()=>navigate("companies")}>Исследовать компанию</Action><Action variant="ghost" icon={FileUp} onClick={()=>navigate("import")}>Загрузить данные</Action></div></div><div className="hero-visual" aria-hidden="true"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="orbit-center"><span className="orbit-n">N</span><span>INTELLIGENCE</span></div><div className="orbit-tag orbit-tag-a"><Building2 size={15}/> BUSINESS</div><div className="orbit-tag orbit-tag-b"><Scale size={15}/> LEGAL</div><div className="orbit-tag orbit-tag-c"><TrendingUp size={15}/> MARKET</div></div></div>
-      <PageHead eyebrow="CONTROL CENTER" title="Обзор системы" description="Единая панель фактов и сигналов. Показатели отражают только текущую выборку." action={<Action icon={RefreshCw} onClick={()=>void load()} disabled={!session||demo}>Синхронизация</Action>}/>
-      <div className="stats-grid"><Stat title="Компании" value={stats.companies} note="В доступном каталоге" icon={Building2}/><Stat title="Товары" value={stats.products} note="Включая сведения о наличии" icon={Package}/><Stat title="Заключённые договоры" value={stats.contracts} note="Из добавленных записей" icon={FileText}/><Stat title="Судебные записи" value={stats.cases} note="Без оценки нарушения" icon={Scale}/></div>
-      <div className="dashboard-grid">
-       <Section title="Закупочная активность" info="Три независимых вида событий" action={<button className="text-action" onClick={()=>navigate("tenders")}>Вся аналитика <ArrowUpRight size={14}/></button>}><div className="activity-list">{[{label:"Участие",count:stats.participation,className:"activity-blue"},{label:"Заявленные победы",count:stats.declaredWins,className:"activity-gold"},{label:"Договоры",count:stats.contracts,className:"activity-teal"}].map(x=><div className="activity-item" key={x.label}><div className="activity-label"><span>{x.label}</span><b>{x.count}</b></div><div className="bar-track"><div className={"bar-fill "+x.className} style={{width:Math.max(5,100*x.count/Math.max(1,stats.participation,stats.declaredWins,stats.contracts))+"%"}}/></div></div>)}</div><p className="panel-caveat">Договор не доказывает победу, а отсутствие записи — отсутствие участия.</p></Section>
-       <Section title="Обновления источников" info="Реальное состояние доступных подключений" action={<button className="text-action" onClick={()=>navigate("sources")}>Все реестры <ArrowUpRight size={14}/></button>}><div className="sources-mini">{(providers.length?providers.slice(0,4):SOURCE_LINKS.slice(0,4)).map(p=><div className="source-mini" key={p.id}><span className="source-icon"><Database size={15}/></span><div><b>{p.name}</b><small>{"status" in p?providerStatus(p.status):"Статус загружается"}</small></div><span className="source-indicator"/></div>)}</div></Section>
-      </div>
-      <div className="bottom-grid"><Section title="Организации в каталоге" info={demo?"Учебные примеры без связи с реестром":"Ваши сохранённые компании"} action={<button className="text-action" onClick={()=>navigate("companies")}>Открыть <ArrowUpRight size={14}/></button>}>{current.companies.length?<div className="compact-list">{current.companies.slice(0,4).map((c,i)=><button className="compact-company" key={c.id} onClick={()=>{setCompanyId(c.id);navigate("companies");}}><span className="company-letter">{c.name.replace(/[^А-ЯA-Z]/g,"").slice(0,1)||String(i+1)}</span><span><b>{c.name}</b><small>{c.region||"Регион не указан"}</small></span><ChevronRight size={16}/></button>)}</div>:<Empty icon={Building2} title="Каталог пуст" detail="Найди организацию по ИНН или загрузи CSV/ЕГРЮЛ." action={<Action onClick={()=>navigate("companies")}>Найти организацию</Action>}/>}</Section><Section title="Контроль качества данных" info="Прозрачный статус каждой записи"><div className="quality-score"><span>{current.companies.filter(x=>x.verification_status==="official_verified").length}</span><div><b>Карточек подтверждено официально</b><small>Непроверенные сведения не подменяют данные реестра</small></div><ShieldCheck size={24}/></div><div className="quality-list"><div><span>Сведения по рынку</span><b>{current.offers.length}</b></div><div><span>Сигналы связей</span><b>{current.relations.length}</b></div><div><span>Общая сумма договорных записей</span><b>{money(stats.contractSum)}</b></div></div></Section></div>
+  {mobileNav&&<button className="sidebar-overlay" aria-label="Закрыть меню" onClick={()=>setMobileNav(false)}/>}
+  <main className="main-area">
+   <header className="topbar">
+    <div className="top-left"><button className="icon-btn hamburger" onClick={()=>setMobileNav(true)} aria-label="Открыть меню"><Menu size={23}/></button><span className="breadcrumb">Workspace</span><ChevronRight size={15}/><strong>{pageTitle}</strong></div>
+    <div className="top-right"><span className={"environment-badge "+(isDemo?"demo":"cloud")}><span className="pulse-dot"/>{isDemo?"ДЕМО · учебные данные":"SUPABASE · личная база"}</span><button className="icon-btn reload" onClick={()=>void refresh()} disabled={loading} aria-label="Обновить данные"><RefreshCw size={18} className={loading?"spin":""}/></button><button className="avatar" title={signedIn?"Личный аккаунт":"Вход"} onClick={()=>{if(user)void logout();else setAuthOpen(true)}}>{user?<LogOut size={17}/>:<LockKeyhole size={17}/>}</button></div>
+   </header>
+   <div className="content">
+    <div className="workspace-actions"><div className="context-date"><span className="context-dot"/> NEXUS Analytics Platform <span className="slash">/</span> {new Date().toLocaleDateString("ru-RU",{day:"numeric",month:"long",year:"numeric"})}</div><div className="context-controls">{user&&<button className={"mode-switch "+(!isDemo?"active":"")} onClick={()=>setMode(isDemo?"cloud":"demo")}>{isDemo?"Перейти в личную базу":"Посмотреть ДЕМО"} <ArrowRight size={14}/></button>}{!user&&<button className="mode-switch" onClick={()=>setAuthOpen(true)}>Создать пространство <ArrowUpRight size={14}/></button>}</div></div>
+    {(!configured&&!isDemo)&&<div className="inline-alert danger">Supabase не настроен для этого развёртывания. Включите публичные переменные VITE_SUPABASE_URL и VITE_SUPABASE_PUBLISHABLE_KEY.</div>}
+    {view==="overview"&&<>
+     <section className="hero">
+      <div className="hero-art"><div className="orb one"/><div className="orb two"/><div className="hero-gridlines"/></div>
+      <div className="hero-text"><span className="eyebrow light"><Sparkles size={13}/> НОВЫЙ СТАНДАРТ БИЗНЕС-АНАЛИТИКИ</span><h1>Видеть больше.<br/><em>Решать точнее.</em></h1><p>Компании, поставщики, рыночные цены, закупки, судебные дела и связи — в единой системе с прозрачным происхождением данных.</p><div className="row wrap"><button className="btn on-dark" onClick={()=>goto("companies")}>Исследовать компании <ArrowRight size={17}/></button><button className="btn hero-outline" onClick={()=>goto("sources")}>Источники данных <ArrowUpRight size={16}/></button></div></div>
+      <div className="hero-visual"><div className="visual-card"><div className="v-top"><span className="live-pulse"/> МОДЕЛЬ АНАЛИЗА <span>v2.0</span></div><div className="v-title">Доказательная аналитика</div><MiniColumns values={[35,55,42,70,58,82,68,95]}/><div className="v-line"><div><b>{metrics.companies}</b><span>Компаний</span></div><div><b>{metrics.products}</b><span>Товаров</span></div><div><b>{metrics.signals}</b><span>Сигналов</span></div></div><div className="v-proof"><ShieldCheck size={15}/> Источники и статусы разделены</div></div></div>
+     </section>
+     <div className="headline-strip"><span>ОБЗОР ПРОСТРАНСТВА</span><span>{isDemo?"Все показатели ниже — вымышленные учебные данные":"Данные только вашего аккаунта Supabase"}</span></div>
+     <div className="metric-grid"><Metric label="Организации" value={metrics.companies} sub="Компаний в досье" icon={Building2}/><Metric label="Продукция" value={metrics.products} sub="Позиций в каталоге" icon={Package}/><Metric label="Процедуры" value={isDemo?dataset.procurements.length:metrics.procurements} sub="Участие ≠ победа" icon={BriefcaseBusiness}/><Metric label="Рыночные данные" value={metrics.marketOffers} sub="Предложений с ценой" icon={BarChart3}/></div>
+     <div className="home-columns"><section className="panel"><div className="panel-top"><div><span className="eyebrow">INTELLIGENCE</span><h2>Основные направления</h2></div><span className="tiny-count">04 модуля</span></div><div className="quick-grid">{[{name:"Проверка компаний",icon:Building2,view:"companies" as View,copy:"Реквизиты, источники, профили"},{name:"Анализ продукции",icon:Package,view:"products" as View,copy:"Цены, наличие, сравнения"},{name:"История закупок",icon:BriefcaseBusiness,view:"procurements" as View,copy:"Участие, победы, договоры"},{name:"Юридические сигналы",icon:Scale,view:"courts" as View,copy:"Дела, роли, источники"}].map(x=><button className="quick-item" key={x.name} onClick={()=>goto(x.view)}><span className="quick-icon"><x.icon size={18}/></span><strong>{x.name}</strong><small>{x.copy}</small><ArrowUpRight className="quick-arrow" size={15}/></button>)}</div></section><section className="panel status-panel"><div className="panel-top"><div><span className="eyebrow">ПРОИСХОЖДЕНИЕ ДАННЫХ</span><h2>Контроль качества</h2></div><ShieldCheck size={20} className="accent-icon"/></div><div className="quality-ring"><div className="quality-core"><strong>{metrics.companies?Math.round(metrics.linked/metrics.companies*100):0}%</strong><small>со ссылками</small></div></div><p className="quality-caption">Наличие ссылки не означает документального подтверждения.</p><button className="text-link" onClick={()=>goto("sources")}>Реестры и ограничения <ArrowRight size={16}/></button></section></div>
+     <ResearchPanel signedIn={signedIn} onSave={saveOfficial}/>
     </>}
-    {page==="companies"&&<>
-     <PageHead eyebrow="BUSINESS INTELLIGENCE" title="Компании и контрагенты" description="Поиск по ИНН, официальные реквизиты, история закупок, дела, продукция и связи." action={<Action variant="primary" icon={Plus} onClick={()=>startForm("company")}>Добавить компанию</Action>}/>
-     <div className="search-panel"><div className="search-panel-copy"><span className="eyebrow">ПРОВЕРКА ПО ИНН</span><h2>Найти организацию в доступных источниках</h2><p>Подтверждённые банковские карточки получаем через сервер NEXUS из Банка России. Остальные источники отмечаем отдельно.</p></div><div className="company-search-form"><label><span>ИНН</span><input inputMode="numeric" value={searchInn} onChange={e=>setSearchInn(e.target.value.replace(/\D/g,"").slice(0,12))} placeholder="10 или 12 цифр"/></label><label><span>ОГРН (необязательно)</span><input inputMode="numeric" value={searchOgrn} onChange={e=>setSearchOgrn(e.target.value.replace(/\D/g,"").slice(0,13))} placeholder="Для банков по ОГРН"/></label><Action variant="primary" icon={Search} disabled={researchBusy} onClick={()=>void runResearch()}>{researchBusy?"Проверяем…":"Начать проверку"}</Action></div><div className="quick-tests"><span>Живые примеры:</span>{[{name:"Сбербанк",inn:"7707083893",ogrn:""},{name:"ВТБ",inn:"7702070139",ogrn:""},{name:"Альфа-Банк",inn:"7728168971",ogrn:""},{name:"Газпромбанк",inn:"7744001497",ogrn:"1027700167110"}].map(x=><button key={x.inn} onClick={()=>void runResearch(x.inn,x.ogrn)}>{x.name}<ArrowUpRight size={12}/></button>)}</div></div>
-     {searchResult&&<Section title="Результат автоматического поиска" info="Факты и совпадения поискового индекса отображаются отдельно." action={<Action onClick={()=>setSearchResult(null)}>Закрыть</Action>}>{searchResult.official?<div className="official-card"><div className="official-header"><Badge tone="positive"><CheckCircle2 size={13}/> Банк России · реквизиты подтверждены</Badge><InlineLink url={searchResult.official.sourceUrl}>Первоисточник</InlineLink></div><h3>{searchResult.official.name}</h3><div className="official-details"><div><small>ИНН</small><strong>{searchResult.official.inn}</strong></div><div><small>ОГРН</small><strong>{searchResult.official.ogrn}</strong></div><div><small>Статус</small><strong>{searchResult.official.status}</strong></div><div><small>Регион</small><strong>{searchResult.official.region||"Не определён"}</strong></div></div><div className="official-actions"><Action variant="primary" icon={Plus} onClick={()=>void saveOfficial(searchResult.official!)} disabled={saving}>Сохранить в каталог</Action><span>Проверка реквизитов не подтверждает тендеры, продукцию или суды</span></div></div>:<div className="hint"><CircleAlert size={18}/>Официальная карточка не подтверждена в подключённом источнике. Это не означает, что организация отсутствует в ФНС.</div>}{searchResult.groups&&Object.entries(searchResult.groups).some(([,g])=>g.results?.length>0)&&<div className="search-links"><h4>Веб-публикации — неофициальные совпадения</h4>{Object.entries(searchResult.groups).flatMap(([kind,g])=>(g.results||[]).slice(0,3).map(x=><div key={kind+x.url}><Badge>{kind}</Badge><InlineLink url={x.url}>{x.title}</InlineLink></div>))}</div>}</Section>}
-     <Section title="Каталог организаций" info={demo?"Учебная демонстрация — не реальные компании":"Сведения из вашей базы"}><div className="inline-filter"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Название, ИНН, регион…"/><span>{current.companies.length} записей</span></div>{current.companies.filter(c=>(c.name+" "+c.inn+" "+c.region).toLowerCase().includes(query.toLowerCase())).length?<div className="company-grid">{current.companies.filter(c=>(c.name+" "+c.inn+" "+c.region).toLowerCase().includes(query.toLowerCase())).map(c=><button className={"company-tile"+(companyId===c.id?" selected":"")} key={c.id} onClick={()=>setCompanyId(c.id)}><span className="company-tile-top"><span className="tile-symbol"><Building2 size={20}/></span><SourceBadge status={c.verification_status}/></span><b>{c.name}</b><small>ИНН {c.inn}</small><span className="tile-meta">{c.region||"Регион не указан"}<ChevronRight size={16}/></span></button>)}</div>:<Empty icon={Building2} title="Компания не найдена" detail="Уточни поиск либо добавь новую организацию."/>}</Section>
-     {selectedCompany&&<Section title={"Досье: "+selectedCompany.name} info="Связанные документы и сведения только из доступной базы" action={<><Action icon={Plus} onClick={()=>startForm("company",selectedCompany as unknown as Record<string,unknown>)}>Редактировать</Action><Action variant="ghost" onClick={()=>void removeRow("company",selectedCompany.id)}>Удалить</Action></>}><div className="detail-bento"><div><small>ИНН</small><b>{selectedCompany.inn}</b></div><div><small>ОГРН</small><b>{selectedCompany.ogrn||"—"}</b></div><div><small>Регион</small><b>{emptyText(selectedCompany.region)}</b></div><div><small>Источник</small><InlineLink url={selectedCompany.source_url}>Открыть документ</InlineLink></div></div><div className="dossier-metrics">{(()=>{const scope=companyScope(current,selectedCompany.id);return [{label:"Товаров",value:scope.products.length,where:"products" as Page},{label:"Закупочных событий",value:scope.tenders.length,where:"tenders" as Page},{label:"Судебных записей",value:scope.cases.length,where:"courts" as Page},{label:"Сигналов связей",value:scope.relations.length,where:"relations" as Page}].map(x=><button key={x.label} onClick={()=>navigate(x.where)}><strong>{x.value}</strong><span>{x.label}</span><ArrowUpRight size={15}/></button>)})()}</div><div className="dossier-tools"><Action variant="primary" onClick={()=>{setProductId("");navigate("products");}}>Продукция компании</Action><Action onClick={()=>navigate("tenders")}>История закупок</Action><Action onClick={()=>navigate("courts")}>Судебные записи</Action></div></Section>}
+    {view==="companies"&&<>
+     <SectionTop kicker="ENTITY INTELLIGENCE" title="Компании и контрагенты" subtitle="Единая карточка: юридическая идентификация, товары, закупки, дела и возможные связи." action={toolbar("company","Добавить компанию")}/>
+     <div className="inline-alert"><ShieldCheck size={16}/> Совпадение директора или адреса — сигнал для проверки, а не доказательство аффилированности.</div>
+     <div className="panel search-panel"><Search size={18}/><input value={companyQuery} onChange={e=>setCompanyQuery(e.target.value)} placeholder="Поиск по названию, ИНН, региону или отрасли"/><span className="item-count">{dataset.companies.length} организаций</span></div>
+     <div className="company-layout"><div className="panel company-list"><div className="panel-top"><h2>Каталог</h2><span className="tiny-count">Сведения из вашей базы</span></div>{dataset.companies.filter(c=>[c.name,c.inn,c.region,c.activity].join(" ").toLowerCase().includes(companyQuery.toLowerCase())).length?dataset.companies.filter(c=>[c.name,c.inn,c.region,c.activity].join(" ").toLowerCase().includes(companyQuery.toLowerCase())).map(c=><button key={c.id} className={"company-row "+((selectedCompany||dataset.companies[0]?.id)===c.id?"selected":"")} onClick={()=>setSelectedCompany(c.id)}><span className="company-monogram">{c.name.replace(/[^А-ЯA-Z]/g,"").slice(0,2)||"CO"}</span><span className="company-info"><strong>{c.name}</strong><small>ИНН {c.inn} · {c.region||"Регион не указан"}</small></span><ChevronRight size={17}/></button>):<Empty heading="Компаний пока нет" copy="Добавьте контрагента или сохраните подтверждённый результат поиска по ИНН."/>}</div>
+      <div className="panel detail-panel">{(()=>{const c=dataset.companies.find(c=>c.id===(selectedCompany||dataset.companies[0]?.id));if(!c)return <Empty heading="Выберите компанию" copy="Для карточки нужны записи в каталоге."/>;const ctx=companyContext(dataset,c.id);return <><div className="panel-top"><span className="eyebrow">COMPANY PROFILE</span><Evidence status={c.verification_status} source={c.source_url}/></div><h2 className="company-title">{c.name}</h2><div className="detail-meta">{c.activity||"Отрасль не указана"} · {c.region||"Регион не указан"}</div><div className="kv two three"><div><small>ИНН</small><b>{c.inn}</b></div><div><small>ОГРН</small><b>{c.ogrn||"Не указан"}</b></div><div><small>Руководитель</small><b>{c.director||"Не указан"}</b></div><div><small>Адрес</small><b>{c.legal_address||"Не указан"}</b></div></div><div className="detail-tally">{[{label:"Товаров",num:ctx.products.length,view:"products" as View},{label:"Закупок",num:ctx.procurements.length,view:"procurements" as View},{label:"Судебных записей",num:ctx.courts.length,view:"courts" as View}].map(t=><button key={t.label} onClick={()=>goto(t.view)}><strong>{t.num}</strong><span>{t.label}</span><ArrowUpRight size={14}/></button>)}</div><div className="row wrap company-links"><SourceLink url={c.source_url}/>{safeHttpUrl(c.website)&&<a className="btn line" target="_blank" rel="noopener noreferrer" href={c.website||undefined}>Сайт компании <ArrowUpRight size={15}/></a>}</div><div className="detail-end">Обратите внимание: если источник не проверен, информация остаётся непроверенной.</div></>})()}</div></div>
+     <ResearchPanel signedIn={signedIn} onSave={saveOfficial}/>
     </>}
-    {page==="products"&&<>
-     <PageHead eyebrow="PRODUCT INTELLIGENCE" title="Продукция и остатки" description="Товарные карточки поставщиков, наличие продукции и переход к сравнению рыночных предложений." action={<Action icon={Plus} variant="primary" onClick={()=>startForm("product")}>Добавить товар</Action>}/>
-     <Section title="Каталог продукции" info={demo?"Вымышленные учебные товары":"Данные поставщиков из вашей базы"}><div className="inline-filter"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Название, артикул, категория…"/><span>{current.products.length} позиций</span></div>{current.products.length?<div className="product-grid">{current.products.filter(p=>(p.name+" "+p.category+" "+p.sku).toLowerCase().includes(query.toLowerCase())).map(p=><article className="product-tile" key={p.id}><div className="product-art"><Package size={34}/><span className="product-art-glow"/></div><div className="product-body"><Badge tone={p.availability==="in_stock"?"positive":p.availability==="on_request"?"gold":"muted"}>{statusName(p.availability)}</Badge><h3>{p.name}</h3><p>{lookup(p.company_id)}</p><div className="product-meta"><span>{p.category||"Без категории"}</span><b>{p.stock_qty===null?"Остаток неизвестен":p.stock_qty+" "+p.unit}</b></div><div className="product-buttons"><Action variant="primary" icon={TrendingUp} onClick={()=>{setSelectedProduct(p.id);navigate("market");}}>Анализ продукции</Action><button className="icon-only" onClick={()=>startForm("product",p as unknown as Record<string,unknown>)} title="Редактировать"><Settings2 size={17}/></button></div></div></article>)}</div>:<Empty icon={Package} title="Пока нет товаров" detail="Добавь продукцию компании или импортируй список в CSV." action={<Action onClick={()=>navigate("import")}>Импорт продукции</Action>}/>}</Section>
+    {view==="products"&&<>
+     <SectionTop kicker="MARKET INTELLIGENCE" title="Продукция и цены" subtitle="Сравнение реальных загруженных предложений, наличие товара и актуальность рыночных источников." action={toolbar("product","Добавить товар")}/>
+     <div className="two-column"><section className="panel"><div className="panel-top"><div><span className="eyebrow">КАТАЛОГ</span><h2>Товарные позиции</h2></div><span className="tiny-count">{dataset.products.length} товаров</span></div>{dataset.products.length?dataset.products.map(p=><button key={p.id} onClick={()=>setSelectedProduct(p.id)} className={"product-row "+((selectedProduct||dataset.products[0]?.id)===p.id?"selected":"")}><span className="product-icon"><Package size={19}/></span><span className="product-info"><strong>{p.name}</strong><small>{companyName(dataset,p.company_id)} · {p.category||"Без категории"}</small></span><span className={"stock-chip "+p.availability}>{({unknown:"Наличие неизвестно",in_stock:"В наличии",on_request:"Под заказ",out_of_stock:"Нет в наличии"})[p.availability]}</span></button>):<Empty heading="Нет товаров" copy="Добавьте товар, чтобы начать сравнивать ценовые предложения."/>}</section><section className="panel"><div className="panel-top"><div><span className="eyebrow">MARKET BENCHMARK</span><h2>Анализ предложения</h2></div><button className="btn small line" onClick={()=>openForm("offer")}><Plus size={15}/> Добавить цену</button></div>{(()=>{const p=dataset.products.find(p=>p.id===(selectedProduct||dataset.products[0]?.id));if(!p)return <Empty heading="Выберите товар" copy="Сравнивайте цены из разных источников."/>;const offers=productOffers(dataset,p);const m=marketStats(offers);return <><h3 className="selection-title">{p.name}</h3><div className="selection-small">Продавец: {companyName(dataset,p.company_id)}</div><div className="kv three">{m?<><div><small>Минимальная цена</small><b>{currency(m.min)}</b></div><div><small>Медиана</small><b>{currency(m.median)}</b></div><div><small>Максимальная цена</small><b>{currency(m.max)}</b></div></>:<div><small>Рыночная цена</small><b>Нет сведений</b></div>}</div>{m?<div className="price-range"><div className="range-head"><span>Диапазон загруженных цен</span><b>{m.count} предложений</b></div><div className="range-track"><div className="range-fill"/></div><p>Предложений «в наличии»: {m.inStock}. Остатки не подтверждены без источника.</p></div>:<div className="inline-alert">Без источников нельзя рассчитать рыночную стоимость.</div>}<div className="offers">{offers.map(o=><div key={o.id} className="offer-row"><div><strong>{o.seller_name}</strong><small>{dateLabel(o.observed_at)} · {o.stock_status==="in_stock"?"В наличии":o.stock_status==="on_request"?"Под заказ":"Наличие не подтверждено"}</small><SourceLink url={o.source_url}/></div><b>{currency(o.unit_price)}</b></div>)}</div></>})()}</section></div>
     </>}
-    {page==="tenders"&&<>
-     <PageHead eyebrow="PROCUREMENT INTELLIGENCE" title="Закупки и договоры" description="Участие ≠ заявленная победа ≠ заключение договора. Каждое событие фиксируется отдельно." action={<Action variant="primary" icon={Plus} onClick={()=>startForm("tender")}>Добавить событие</Action>}/>
-     <div className="caution"><ShieldCheck size={18}/><span>Только загруженные записи. Импортированный договор не доказывает победу в тендере. Источник и проверка обязательны для обоснованного вывода.</span></div>
-     <div className="stats-grid"><Stat title="Участие" value={procurementSummary(current.tenders).participation} note="По данным выборки" icon={Layers3}/><Stat title="Заявленные победы" value={procurementSummary(current.tenders).wins} note="Не подтверждаются автоматически" icon={TrendingUp}/><Stat title="Договоры" value={procurementSummary(current.tenders).contracts} note="Отдельные записи" icon={FileText}/><Stat title="Сумма договоров" value={money(procurementSummary(current.tenders).totalContracts)} note="Только загруженные записи" icon={BarChart3}/></div>
-     <Section title="История процедур" info="События сгруппированы по категориям — возможны несколько видов на один номер." action={<div className="select-wrap"><Filter size={15}/><select value={tenderKind} onChange={e=>setTenderKind(e.target.value)}><option value="all">Все события</option><option value="participation">Участие</option><option value="win">Победа</option><option value="contract">Договор</option><option value="other">Не определено</option></select></div>}>{current.tenders.filter(t=>!t.is_demo&&(tenderKind==="all"||t.event_type===tenderKind)).length?<div className="record-list">{current.tenders.filter(t=>!t.is_demo&&(tenderKind==="all"||t.event_type===tenderKind)).map(t=><div className="record" key={t.id}><div className="record-main"><div className="record-tags"><Badge tone={t.event_type==="contract"?"positive":t.event_type==="win"?"gold":"blue"}>{eventName(t.event_type)}</Badge><Badge>{t.law==="223-FZ"?"223-ФЗ":t.law==="44-FZ"?"44-ФЗ":"Не определён"}</Badge><SourceBadge status={t.verification_status}/></div><h3>{t.procedure_number}</h3><p>{lookup(t.company_id)} · {emptyText(t.customer)}</p><small><Clock3 size={13}/>{prettyDay(t.occurred_at)} · {money(t.amount)}</small></div><div className="record-actions"><InlineLink url={t.source_url}>Открыть источник</InlineLink><button onClick={()=>startForm("tender",t as unknown as Record<string,unknown>)}>Править</button></div></div>)}</div>:<Empty icon={FileText} title="Закупочных записей нет" detail="Загрузи XML-контракты ЕИС или добавь процедурные события вручную." action={<Action onClick={()=>navigate("import")}>Импортировать</Action>}/>}</Section>
+    {view==="procurements"&&<>
+     <SectionTop kicker="PROCUREMENT INTELLIGENCE" title="Закупки и договоры" subtitle="Разделяем участие, подтверждение победы и заключение контракта. Никакой подмены понятий." action={toolbar("procurement","Добавить событие")}/>
+     <div className="inline-alert gold"><CircleAlert size={17}/> Договор ≠ победа в закупке. Количество событий не является полным реестром ЕИС.</div>
+     <div className="metric-grid"><Metric label="Участия" value={proc.participation} sub="Заявленные события" icon={FileSearch}/><Metric label="Победы" value={proc.wins} sub="Требуют сверки" icon={BadgeCheck}/><Metric label="Договоры" value={proc.contracts} sub="В загруженных данных" icon={BriefcaseBusiness}/><Metric label="Сумма договоров" value={currency(proc.contractValue)} sub="Не официальный объём" icon={ChartNoAxesCombined}/></div>
+     <div className="panel table-panel"><div className="panel-top"><h2>История событий</h2><div className="row"><SlidersHorizontal size={16}/><select className="filter-select" value={procFilter} onChange={e=>setProcFilter(e.target.value)}><option value="all">Все события</option><option value="participation">Участие</option><option value="win">Победа</option><option value="contract">Договор</option></select></div></div><div className="responsive-table"><table><thead><tr><th>Номер</th><th>Компания</th><th>Заказчик</th><th>Тип</th><th>Сумма</th><th>Источник</th></tr></thead><tbody>{dataset.procurements.filter(p=>procFilter==="all"||p.event_type===procFilter).map(p=><tr key={p.id}><td><b>{p.procedure_number}</b><small>{dateLabel(p.occurred_at)}</small></td><td>{companyName(dataset,p.company_id)}</td><td>{p.customer||"Не указан"}</td><td><span className={"event-tag "+p.event_type}>{({participation:"Участие",win:"Победа",contract:"Договор",other:"Другое"})[p.event_type]}</span></td><td><b>{p.amount==null?"Неизвестна":currency(p.amount)}</b></td><td><SourceLink url={p.source_url}/></td></tr>)}</tbody></table>{!dataset.procurements.length&&<Empty heading="Нет закупочных записей" copy="Добавьте участие, победу или договор через форму или импорт."/>}</div></div>
     </>}
-    {page==="courts"&&<>
-     <PageHead eyebrow="LEGAL INTELLIGENCE" title="Судебная аналитика" description="Процессуальные роли, стадии, суммы требований и ссылки на документы." action={<Action variant="primary" icon={Plus} onClick={()=>startForm("case")}>Добавить дело</Action>}/>
-     <div className="caution"><CircleAlert size={18}/><span>Наличие судебного дела не означает нарушения закона. Сумма исковых требований не является установленной задолженностью.</span></div>
-     <div className="stats-grid"><Stat title="Истец" value={courtSummary(current.cases).plaintiff} note="Роль стороны" icon={FileText}/><Stat title="Ответчик" value={courtSummary(current.cases).defendant} note="Не показатель нарушения" icon={Scale}/><Stat title="Третье лицо" value={courtSummary(current.cases).thirdParty} note="Отдельная роль" icon={Users}/><Stat title="Сумма требований" value={money(courtSummary(current.cases).claimAmount)} note="Не равна задолженности" icon={BarChart3}/></div>
-     <Section title="Реестр судебных записей" action={<div className="select-wrap"><Filter size={15}/><select value={courtRole} onChange={e=>setCourtRole(e.target.value)}><option value="all">Все роли</option><option value="plaintiff">Истец</option><option value="defendant">Ответчик</option><option value="third_party">Третье лицо</option><option value="unknown">Не определена</option></select></div>}>{current.cases.filter(c=>!c.is_demo&&(courtRole==="all"||c.role===courtRole)).length?<div className="record-list">{current.cases.filter(c=>!c.is_demo&&(courtRole==="all"||c.role===courtRole)).map(c=><div className="record" key={c.id}><div className="record-main"><div className="record-tags"><Badge tone={c.role==="defendant"?"warning":"blue"}>{roleName(c.role)}</Badge><SourceBadge status={c.verification_status}/></div><h3>{c.case_number}</h3><p>{lookup(c.company_id)} · {emptyText(c.court_name)}</p><small>{emptyText(c.stage)} · Требования: {money(c.claim_amount)} · {prettyDay(c.filed_at)}</small></div><div className="record-actions"><InlineLink url={c.source_url}>Документ дела</InlineLink><button onClick={()=>startForm("case",c as unknown as Record<string,unknown>)}>Править</button></div></div>)}</div>:<Empty icon={Scale} title="Записи отсутствуют" detail="Это не означает отсутствия судебных дел. Проверь официальный КАД." action={<Action onClick={()=>navigate("sources")}>Открыть источники</Action>}/>}</Section>
+    {view==="courts"&&<>
+     <SectionTop kicker="LEGAL INTELLIGENCE" title="Судебная аналитика" subtitle="Дела, роли сторон и заявленные требования с первоисточниками и без автоматических обвинений." action={toolbar("court","Добавить дело")}/>
+     <div className="inline-alert gold"><Scale size={17}/> Участие в деле не означает нарушения. Сумма исковых требований не равна установленной задолженности.</div>
+     <div className="metric-grid"><Metric label="Судебные записи" value={dataset.courts.length} sub="В вашей выборке" icon={Scale}/><Metric label="В роли истца" value={dataset.courts.filter(c=>c.role==="plaintiff").length} sub="По загруженным делам" icon={BookOpenCheck}/><Metric label="В роли ответчика" value={dataset.courts.filter(c=>c.role==="defendant").length} sub="Не оценка нарушений" icon={FileSearch}/><Metric label="Сумма требований" value={currency(dataset.courts.reduce((s,x)=>s+Number(x.claim_amount||0),0))} sub="Не сумма долга" icon={Activity}/></div>
+     <div className="panel table-panel"><div className="panel-top"><h2>Судебные дела</h2><div className="row"><Filter size={16}/><select className="filter-select" value={courtFilter} onChange={e=>setCourtFilter(e.target.value)}><option value="all">Все роли</option><option value="plaintiff">Истец</option><option value="defendant">Ответчик</option><option value="third_party">Третье лицо</option></select></div></div><div className="responsive-table"><table><thead><tr><th>Номер дела</th><th>Компания</th><th>Суд и стадия</th><th>Роль</th><th>Требования</th><th>Источник</th></tr></thead><tbody>{dataset.courts.filter(c=>courtFilter==="all"||c.role===courtFilter).map(c=><tr key={c.id}><td><b>{c.case_number}</b><small>{dateLabel(c.filed_at)}</small></td><td>{companyName(dataset,c.company_id)}</td><td>{c.court_name}<small>{c.stage}</small></td><td><span className={"event-tag "+c.role}>{({plaintiff:"Истец",defendant:"Ответчик",third_party:"Третье лицо",other:"Иная",unknown:"Неизвестна"})[c.role]}</span></td><td>{c.claim_amount==null?"Нет данных":currency(c.claim_amount)}</td><td><SourceLink url={c.source_url}/></td></tr>)}</tbody></table>{!dataset.courts.length&&<Empty heading="Судебных записей нет" copy="Это не подтверждает отсутствие судебных дел у компании. Проверьте КАД."/>}</div></div>
     </>}
-    {page==="market"&&<>
-     <PageHead eyebrow="MARKET INTELLIGENCE" title="Анализ рынка и цен" description="Сравнение сопоставимых товарных предложений с учётом даты, наличия и первоисточника." action={<Action variant="primary" icon={Plus} onClick={()=>startForm("offer")}>Добавить цену</Action>}/>
-     <div className="market-head"><label className="market-picker"><span>Выбери продукцию для сравнения</span><select value={chosenProduct?.id||""} onChange={e=>{setSelectedProduct(e.target.value);setProductId(e.target.value);}}><option value="">Выбрать товар</option>{current.products.map(p=><option key={p.id} value={p.id}>{p.name} · {lookup(p.company_id)}</option>)}</select></label><div className="market-flag"><BarChart3 size={18}/> АНАЛИТИКА ВЫБОРКИ</div></div>
-     {chosenProduct?(()=>{const offers=current.offers.filter(o=>o.product_id===chosenProduct.id);const ins=productInsight(chosenProduct,offers);const maxPrice=Math.max(1,...offers.map(o=>o.unit_price));return <><div className="stats-grid"><Stat title="Предложений" value={ins.sampleSize} note="Только в выборке" icon={Layers3}/><Stat title="Минимальная цена" value={money(ins.minimum)} note="При сопоставимости" icon={TrendingUp}/><Stat title="Медиана" value={money(ins.median)} note="Без экстремальных оценок" icon={BarChart3}/><Stat title="В наличии" value={ins.inStock} note="Указано поставщиками" icon={Package}/></div><Section title="Сравнение предложений" info="Рублей за единицу; неизвестные цены и другие валюты не смешиваются" action={<button className="text-action" onClick={()=>csvExport(["Продавец","Цена","Наличие","Дата","Источник"],offers.map(o=>[o.seller_name,o.unit_price,o.stock_status,o.observed_at,o.source_url]),"nexus-market.csv")}>Экспорт CSV <ArrowDownToLine size={15}/></button>}><div className="price-chart">{offers.length?offers.slice().sort((a,b)=>a.unit_price-b.unit_price).map(o=><div className="price-row" key={o.id}><span className="price-seller">{o.seller_name}<small>{statusName(o.stock_status)} · {prettyDay(o.observed_at)}</small></span><div className="price-track"><div style={{width:Math.max(5,100*o.unit_price/maxPrice)+"%"}}/></div><strong>{money(o.unit_price)}</strong><button className="tiny-edit" onClick={()=>startForm("offer",o as unknown as Record<string,unknown>)}>Изменить</button></div>):<Empty icon={BarChart3} title="Предложений пока нет" detail="Добавь цены конкурентов для рыночного сравнения."/>}</div><div className="caution"><CircleAlert size={17}/><span>{ins.caveat} Наличие — заявление поставщика, не проверенный складской остаток.</span></div></Section></>})():<Empty icon={Package} title="Выбери товар" detail="Добавь продукцию компании, затем собирай и сравнивай коммерческие предложения." action={<Action onClick={()=>navigate("products")}>Каталог продукции</Action>}/>}
+    {view==="relations"&&<>
+     <SectionTop kicker="AFFILIATION SIGNALS" title="Возможные связи" subtitle="Автоматический анализ общих руководителей, контактов и адресов. Каждое совпадение остаётся гипотезой." action={<button className="btn line" onClick={()=>goto("companies")}>Каталог компаний <ArrowRight size={16}/></button>}/>
+     <div className="inline-alert gold"><CircleAlert size={17}/> Совпадение адресов бизнес-центра или руководителей может иметь законные объяснения. NEXUS не делает вывод об аффилированности без доказательств.</div>
+     <div className="metric-grid"><Metric label="Проверено компаний" value={dataset.companies.length} sub="Локальная выборка" icon={Building2}/><Metric label="Совпадения полей" value={signalPairs.length} sub="Автоматические сигналы" icon={Network}/><Metric label="Связи из базы" value={dataset.relations.length} sub="Добавленные сведения" icon={Link2}/><Metric label="Подтверждённые связи" value={dataset.relations.filter(r=>r.verification_status==="official_verified"||r.verification_status==="user_verified").length} sub="Проверены отдельно" icon={ShieldCheck}/></div>
+     <div className="signal-grid">{signalPairs.length?signalPairs.map((r,i)=><div className="signal-card" key={i}><div className="signal-top"><span className="signal-icon"><Network size={18}/></span><span className="evidence unknown"><CircleAlert size={12}/> Гипотеза</span></div><h3>{r.a.name} <span>↔</span> {r.b.name}</h3><div className="signal-proof"><strong>{({director:"Общий руководитель",legal_address:"Общий адрес",phone:"Совпадающий телефон",email:"Общий email"})[r.field]}</strong><p>{r.evidence}</p></div><small>Для подтверждения нужны юридически значимые документы.</small></div>):<Empty heading="Совпадений не обнаружено" copy="Добавьте контакты, руководителей и адреса в карточки компаний."/>}{dataset.relations.map(r=><div className="signal-card" key={r.id}><div className="signal-top"><span className="signal-icon"><Link2 size={18}/></span><Evidence status={r.verification_status}/></div><h3>{companyName(dataset,r.company_a)} ↔ {companyName(dataset,r.company_b)}</h3><div className="signal-proof">{relationLabel(r)}: {r.signal_value}</div><SourceLink url={r.source_url}/></div>)}</div>
     </>}
-    {page==="relations"&&<>
-      <PageHead eyebrow="RELATIONSHIP INTELLIGENCE" title="Связи и аффилированность" description="Признаки пересечений адресов, руководителей и контактов; каждое совпадение требует доказательной проверки." action={<Action variant="primary" icon={Plus} onClick={()=>startForm("relation")}>Добавить сигнал</Action>}/>
-      <div className="caution"><Network size={19}/><span>Сигнал связи не равен доказанной аффилированности. Общий адрес бизнес-центра сам по себе ничего не доказывает.</span></div>
-      <Section title="Карта связей компаний" info="Связи формируются только из сохранённых вами признаков">{current.relations.length?<div className="relations-grid">{relationSignals(current.relations,current.companies).map(r=><div className="relation-card" key={r.id}><div className="relation-pair"><span>{r.left}</span><span className="relation-line"><Link2 size={17}/></span><span>{r.right}</span></div><Badge tone="gold">Сигнал: {({director:"Руководитель",address:"Адрес",phone:"Телефон",email:"Email",founder:"Учредитель",other:"Другое"} as Record<string,string>)[r.signal_type]}</Badge><p>{r.signal_value||"Значение не указано"}</p><small>{r.conclusion}</small><div className="relation-actions"><InlineLink url={r.source_url}>Источник</InlineLink><button onClick={()=>startForm("relation",r as unknown as Record<string,unknown>)}>Редактировать</button></div></div>)}</div>:<Empty icon={Network} title="Пока нет зафиксированных сигналов" detail="Добавь сведения о совпадениях с их подтверждающими источниками."/>}</Section>
+    {view==="sources"&&<>
+     <SectionTop kicker="INTEGRATION GATEWAY" title="Источники и интеграции" subtitle="Честная матрица реальных подключений, ручных реестров и необходимых разрешений. Все источники — через единый шлюз." action={<button className="btn line" onClick={()=>goto("overview")}>Проверить ИНН <ArrowRight size={16}/></button>}/>
+     {providerError&&<div className="inline-alert">{providerError}</div>}<div className="integration-head"><div><span>СИСТЕМЫ И РЕЕСТРЫ</span><h2>Статус подключений</h2></div><span className="integration-counter">{(providers.length?providers:fallbackProviders).length} источников</span></div>
+     <div className="source-grid">{(providers.length?providers:fallbackProviders).map(p=><article key={p.id} className="source-card"><div className="source-top"><span className="source-brand"><Database size={18}/></span><span className={"source-state "+(p.status==="live_partial"?"live":"manual")}>{p.status==="live_partial"?"Частично подключено":p.status==="credentials_required"?"Требует доступа":p.status==="manual"?"Ручной доступ":"API / лицензия"}</span></div><h3>{p.name}</h3><strong>{p.scope}</strong><p>{p.reason}</p><a href={safeHttpUrl(p.url)||"#"} target="_blank" rel="noopener noreferrer">Открыть реестр <ArrowUpRight size={16}/></a></article>)}</div>
+     <div className="inline-alert gold"><Globe2 size={18}/> Плагины, доступные в ChatGPT, не передают автоматически свои токены приложению. Для каждой внешней базы нужны законный API, серверный адаптер, права и журнал запросов.</div>
     </>}
-    {page==="sources"&&<>
-      <PageHead eyebrow="DATA INFRASTRUCTURE" title="Источники и интеграции" description="Здесь показана реальная доступность сервисов. Ссылка на сайт не считается интеграцией с API." action={<Action icon={RefreshCw} onClick={()=>void getProviders().then(setProviders).catch(e=>setProvidersError(makeError(e)))}>Проверить доступность</Action>}/>
-      <div className="source-summary"><div><Cloud size={23}/><b>{providers.length}</b><span>Источников в реестре сервера</span></div><div><ShieldCheck size={23}/><b>{providers.filter(p=>p.status==="live_partial").length}</b><span>Частично автоматизированы</span></div><div><LockKeyhole size={23}/><b>{providers.filter(p=>p.status==="credentials_required"||p.status==="licensed_or_manual").length}</b><span>Требуют доступа</span></div></div>
-      {providersError&&<div className="caution"><CircleAlert size={17}/>Не удалось получить статусы: {providersError}</div>}
-      <Section title="Реестр коннекторов" info="Статусы поступают от NEXUS Research Engine. Состояние бизнес-данных требует отдельной проверки."><div className="inline-filter"><Filter size={17}/><select value={sourceFilter} onChange={e=>setSourceFilter(e.target.value)}><option value="all">Все подключения</option><option value="live_partial">Частичный API</option><option value="manual">Ручная проверка</option><option value="credentials_required">Требуется доступ</option><option value="licensed_or_manual">API / лицензия</option></select><span>{providers.length} источников</span></div><div className="provider-grid">{(providers.length?providers:SOURCE_LINKS.map(x=>({...x,status:"unknown",reason:"Статус сервера не загружен"}))).filter(p=>sourceFilter==="all"||p.status===sourceFilter).map(p=><div className="provider-card" key={p.id}><div className="provider-title"><span><Database size={18}/></span><Badge tone={p.status==="live_partial"?"positive":"warning"}>{providerStatus(p.status)}</Badge></div><h3>{p.name}</h3><p>{p.reason||("summary" in p?p.summary:"")}</p><InlineLink url={p.url}>Открыть источник</InlineLink></div>)}</div></Section>
+    {view==="imports"&&<>
+     <SectionTop kicker="DATA OPERATIONS" title="Импорт данных" subtitle="Загружайте разрешённые CSV-выгрузки: сначала предварительный разбор, затем импорт в личную базу." action={<button className="btn line" onClick={()=>goto("sources")}>Источники <ArrowRight size={16}/></button>}/>
+     <div className="two-column"><section className="panel upload-panel"><div className="panel-top"><h2>Новый импорт</h2><span className="evidence unknown">Проверка перед записью</span></div><label className="field"><span>Сущность</span><select value={importKind} onChange={e=>{setImportKind(e.target.value as EntityKind);setImportRows([]);setImportErrors([])}}>{Object.entries(kindLabels).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select></label><label className="file-drop"><FileUp size={29}/><strong>Выбрать CSV через «Файлы»</strong><small>UTF-8 · до 250 строк · максимум 1,5 МБ</small><input type="file" accept=".csv,text/csv" onChange={e=>void fileChosen(e.target.files?.[0]||null)}/></label><div className="upload-explain"><b>Поддерживаемые колонки</b><p>{importKind==="company"?"ИНН;Название;Регион;Отрасль;Руководитель;Адрес;Источник":importKind==="product"?"ИНН;Товар;Категория;Единица;Источник":importKind==="procurement"?"ИНН;Номер;Заказчик;Событие;Сумма;Источник":importKind==="court"?"ИНН;Номер дела;Суд;Статус;Источник":"Товар;Продавец;Цена;Источник"}</p></div><a className="text-link" href="https://nexus-analytics-hub-volgamen163-1027.vercel.app/?view=imports" target="_blank" rel="noopener noreferrer">Старый импорт XML ФНС / ЕИС (v1.0) <ArrowUpRight size={15}/></a></section><section className="panel upload-panel"><div className="panel-top"><h2>Предварительная проверка</h2><span className="tiny-count">{importFilename||"Файл не выбран"}</span></div>{importRows.length?(()=>{const res=importPreview();return <><div className="kv two"><div><small>Всего строк</small><b>{importRows.length}</b></div><div><small>Готово к импорту</small><b>{res.valid.length}</b></div></div>{[...importErrors,...res.errors].slice(0,6).map((x,i)=><div className="import-error" key={i}>{x}</div>)}<p className="import-description">Все импортируемые записи получат статус «Не проверено». Совпадения компаний проверяются по ИНН.</p><button className="btn primary full" disabled={saving||!res.valid.length} onClick={()=>void commitCsv()}>{saving?"Добавляем…":"Добавить "+res.valid.length+" записей в Supabase"}</button></>})():<Empty heading="Загрузите файл" copy="Здесь появятся ошибки валидации и количество подходящих строк."/>}{importErrors.map((x,i)=><div key={i} className="import-error">{x}</div>)}</section></div>
     </>}
-    {page==="import"&&<>
-      <PageHead eyebrow="DATA PIPELINE" title="Импорт и нормализация" description="CSV и ограниченный XML ЕГРЮЛ/ЕГРИП / договоров. Единая проверка идентификаторов, источника и структуры."/>
-      <div className="import-layout"><div className="import-left"><Section title="Загрузить данные" info="Файл читается на устройстве. Сохранение в облако — только после предварительной проверки."><label className="form-field"><span>Тип данных для CSV</span><select value={importType} onChange={e=>{setImportType(e.target.value as ImportPreview["type"]);setPreview(null);}}><option value="companies">Компании</option><option value="products">Продукция</option><option value="tenders">Закупки</option><option value="cases">Судебные записи</option></select></label><label className="file-drop"><FileUp size={26}/><b>Выбери файл из «Файлы»</b><span>CSV (UTF-8), XML ФНС или контрактов · до 2 МБ</span><input type="file" accept=".csv,.xml,text/csv,application/xml,text/xml" onChange={e=>{const f=e.target.files?.[0];if(f)void importFile(f);e.target.value="";}}/></label><Action icon={ArrowDownToLine} onClick={()=>fileSave(sampleCsv(importType),"nexus-template-"+importType+".csv")}>Скачать CSV-шаблон</Action><div className="pipeline-steps">{["Выбор файла","Проверка ИНН и полей","Предварительный просмотр","Подтверждённая запись в STAGING"].map((step,i)=><div key={step}><span>{String(i+1).padStart(2,"0")}</span>{step}</div>)}</div></Section></div>
-      <div className="import-right"><Section title="Предварительный просмотр" info="Ни одна запись не добавляется без подтверждения">{preview?<><div className="import-stats"><div><b>{preview.total}</b><small>Строк</small></div><div><b>{preview.items.length}</b><small>Корректных</small></div><div><b>{preview.errors.length}</b><small>Ошибок</small></div></div><p className="import-detail">{preview.info}</p>{preview.items.slice(0,3).map((x,i)=><div className="preview-item" key={i}>{String(x.name||x.procedure_number||x.case_number||"Запись")}<small>{String(x.inn||x.companyInn||"")} · НЕ ПОДТВЕРЖДЕНО</small></div>)}{preview.errors.slice(0,5).map((x,i)=><p className="import-error" key={i}>{x}</p>)}<div className="import-actions"><Action variant="primary" icon={CheckCircle2} onClick={()=>void commitImport()} disabled={importBusy||!preview.items.length}>{importBusy?"Загружаем…":"Подтвердить импорт"}</Action><Action onClick={()=>setPreview(null)}>Отменить</Action></div></>:<Empty icon={FileUp} title="Файл ещё не загружен" detail="Выбери файл, чтобы увидеть результаты проверки до сохранения."/>}</Section><div className="caution"><ShieldCheck size={18}/><span>Обработанный файл не подтверждает происхождение из ФНС или ЕИС. Электронные подписи и полнота выгрузки требуют независимой проверки.</span></div></div></div>
-    </>}
-    {page==="settings"&&<>
-     <PageHead eyebrow="PLATFORM CONFIGURATION" title="Состояние системы" description="Проверки реальной связи с Supabase, доступа к данным и возможностей интеграций."/>
-     <div className="settings-grid"><Section title="Тестовый аккаунт" info="Персональная база, без публикации данных других пользователей"><div className="settings-user"><div className="settings-avatar">{session?.user.email?.slice(0,1).toUpperCase()||"N"}</div><div><b>{session?.user.email||"Гостевой доступ"}</b><small>{session?"Авторизован в Supabase STAGING":"Войдите для сохранения данных"}</small></div></div><div className="settings-actions">{session?<Action icon={LogOut} onClick={()=>void cloud?.auth.signOut()}>Выйти</Action>:<Action variant="primary" icon={LogIn} onClick={()=>setAuthOpen(true)}>Войти / создать аккаунт</Action>}<Action onClick={()=>setDemo(!demo)}>{demo?"Открыть реальную базу":"Просмотр ДЕМО"}</Action></div></Section><Section title="Живая диагностика" info="Не имитирует успех; проверяет действительные ответы сервера"><div className="diagnostic-list">{diagnostics?.map(x=><div className="diag" key={x.name}>{x.ok?<CheckCircle2 color="#2D8C71" size={16}/>:<CircleAlert color="#B47B47" size={16}/>}<span><b>{x.name}</b><small>{x.message}</small></span></div>)||<p className="muted-p">Проверки не запускались.</p>}</div><Action icon={RefreshCw} onClick={()=>void runDiagnostics()} disabled={diagnosticsBusy}>{diagnosticsBusy?"Проверка…":"Проверить пять подключений"}</Action></Section></div>
-     <Section title="Правила обработки данных" info="Дизайн для эксплуатации в закупках и договорной работе"><div className="rules-grid">{[{icon:ShieldCheck,title:"Разделение данных",text:"Каждый пользователь видит только свои записи благодаря RLS."},{icon:Database,title:"Один источник истины",text:"Компании и их документы хранятся в связанных таблицах Supabase."},{icon:Activity,title:"Доказательная аналитика",text:"Победа, договор, судебное требование и связь не приравниваются друг к другу."},{icon:Link2,title:"Интеграции без секретов",text:"Сервисные ключи не передаются в браузер; коммерческие API без доступа отключены."}].map(x=><div className="rule" key={x.title}><x.icon size={20}/><h3>{x.title}</h3><p>{x.text}</p></div>)}</div></Section>
-    </>}
-    <footer className="main-footer"><span>NEXUS ANALYTICS © 2026 · v2.0 STAGING</span><span>Проверяйте первоисточники перед принятием решений</span></footer>
-   </main>
-  </div>
-  <nav className="mobile-tabs" aria-label="Быстрая навигация">{NAV.slice(0,4).map(n=><button key={n.id} className={page===n.id?"active":""} onClick={()=>navigate(n.id)}><n.icon size={19}/><span>{n.short}</span></button>)}<button className={NAV.slice(4).some(n=>n.id===page)?"active":""} onClick={()=>setMobileNav(true)}><Menu size={19}/><span>Ещё</span></button></nav>
-  {form&&<div className="modal-overlay" role="presentation" onClick={()=>setForm(null)}><div className="dialog" role="dialog" aria-modal="true" aria-label={"Форма: "+KIND_TITLE[form.kind]} onClick={e=>e.stopPropagation()}><div className="dialog-head"><div><div className="eyebrow">NEXUS / DATA ENTRY</div><h2>{form.id?"Редактировать: ":"Добавить: "}{KIND_TITLE[form.kind]}</h2></div><button onClick={()=>setForm(null)} aria-label="Закрыть"><X size={20}/></button></div><form onSubmit={e=>void submitForm(e)}><div className="form-grid">{FormFields(form.kind,data).map(f=><Field key={f.key} field={f} value={draft[f.key]||""} onChange={value=>setDraft({...draft,[f.key]:value})}/>)}</div><p className="form-hint"><ShieldCheck size={15}/> Сведения без подтверждённого первоисточника сохраняются как непроверенные.</p><div className="dialog-footer"><Action onClick={()=>setForm(null)}>Отмена</Action><button type="submit" className="action action-primary" disabled={saving}>{saving?"Сохраняем…":"Сохранить"}</button></div></form></div></div>}
-  {authOpen&&<div className="modal-overlay" role="presentation" onClick={()=>setAuthOpen(false)}><div className="dialog auth-dialog" role="dialog" aria-modal="true" aria-label="Вход в NEXUS" onClick={e=>e.stopPropagation()}><div className="dialog-head"><div><div className="eyebrow">SECURE ACCESS</div><h2>{authSignup?"Создать аккаунт":"Войти в NEXUS"}</h2></div><button onClick={()=>setAuthOpen(false)} aria-label="Закрыть"><X size={20}/></button></div><p className="auth-description">Единая тестовая база Supabase. Ваши данные защищены на уровне строк (RLS).</p><form onSubmit={e=>void authSubmit(e)} className="auth-form"><label className="form-field"><span>Email</span><input type="email" required value={authEmail} onChange={e=>setAuthEmail(e.target.value)} autoComplete="email"/></label><label className="form-field"><span>Пароль</span><input type="password" required minLength={6} value={authPassword} onChange={e=>setAuthPassword(e.target.value)} autoComplete={authSignup?"new-password":"current-password"}/></label><button type="submit" className="action action-primary" disabled={authBusy}>{authBusy?"Подключаем…":authSignup?"Зарегистрироваться":"Войти"}</button></form><button className="auth-toggle" onClick={()=>setAuthSignup(!authSignup)}>{authSignup?"Уже есть аккаунт? Войти":"Нет аккаунта? Создать тестовый"}</button></div></div>}
+    <footer className="content-footer"><span>NEXUS ANALYTICS <b>2.0</b> · STAGING</span><span><ShieldCheck size={14}/> Проверка источников обязательна · {configured?"Supabase подключён":"Supabase не настроен"}</span></footer>
+   </div>
+  </main>
+  <nav className="mobile-bottom" aria-label="Мобильная навигация">{menu.filter(x=>["overview","companies","products","procurements"].includes(x.id)).map(({id,name,icon:Icon})=><button key={id} className={view===id?"active":""} onClick={()=>goto(id)}><Icon size={20}/><small>{name}</small></button>)}<button className={["courts","relations","sources","imports"].includes(view)?"active":""} onClick={()=>setMobileNav(true)}><Menu size={20}/><small>Ещё</small></button></nav>
+  {toast&&<div className="toast" role="status"><Bell size={17}/>{toast}<button aria-label="Скрыть" onClick={()=>setToast("")}><X size={15}/></button></div>}
+  {form&&<EntityForm kind={form} workspace={dataset} onSave={saveForm} onClose={()=>setForm(null)}/>}
+  {authOpen&&<div className="modal-scrim" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)setAuthOpen(false)}}><section className="auth-dialog" role="dialog" aria-modal="true"><div className="dialog-top"><div><span className="eyebrow">NEXUS SECURE WORKSPACE</span><h2>{authMode==="signin"?"Войти в аккаунт":"Создать пространство"}</h2></div><button className="icon-btn" onClick={()=>setAuthOpen(false)} aria-label="Закрыть"><X size={20}/></button></div><p>Личный каталог компаний и аналитические записи защищены политиками Supabase RLS.</p><form onSubmit={e=>{e.preventDefault();void handleAuth()}}><label className="field"><span>Email</span><input type="email" value={email} onChange={e=>setEmail(e.target.value)} required autoComplete="email"/></label><label className="field"><span>Пароль</span><input type="password" value={password} onChange={e=>setPassword(e.target.value)} required minLength={6} autoComplete={authMode==="signin"?"current-password":"new-password"}/></label>{authError&&<div className="inline-alert danger">{authError}</div>}<button className="btn primary full" disabled={!configured||saving}>{saving?"Проверяем…":authMode==="signin"?"Войти в Supabase":"Зарегистрироваться"}</button></form><button className="auth-switch" onClick={()=>{setAuthMode(authMode==="signin"?"signup":"signin");setAuthError("")}}>{authMode==="signin"?"Нет аккаунта? Создать новый":"Есть аккаунт? Войти"}</button><div className="auth-foot"><LockKeyhole size={15}/> Клиент использует только публичный ключ. Серверные секреты здесь не хранятся.</div></section></div>}
  </div>;
 }
