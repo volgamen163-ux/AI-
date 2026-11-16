@@ -30,7 +30,7 @@ export function ResearchPanel({signedIn,onSave}:{signedIn:boolean;onSave:(compan
   if(!researchEndpoint.startsWith("https://")){setError("Сервер исследования не настроен");return;}
   setBusy(true);
   try{
-   const token=!demo?(await supabase?.auth.getSession()).data.session?.access_token:null;
+   const token=!demo&&supabase?(await supabase.auth.getSession()).data.session?.access_token:null;
    if(!demo&&!token)throw new Error("Сессия Supabase не найдена");
    const url=new URL(researchEndpoint);url.searchParams.set("inn",inn);url.searchParams.set("mode",demo?"demo":"lookup");
    if(ogrn)url.searchParams.set("ogrn",ogrn);

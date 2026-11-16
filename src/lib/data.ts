@@ -6,9 +6,9 @@ const map = {
  courts:"na2_court_cases", offers:"na2_market_offers",relations:"na2_company_relations"
 } as const;
 export async function loadWorkspace():Promise<Workspace>{
- if(!supabase)throw new Error("Supabase не настроен");
+ const client=supabase;if(!client)throw new Error("Supabase не настроен");
  const names=Object.keys(map) as (keyof typeof map)[];
- const responses=await Promise.all(names.map(key=>supabase.from(map[key]).select("*").limit(1000)));
+ const responses=await Promise.all(names.map(key=>client.from(map[key]).select("*").limit(1000)));
  for(let i=0;i<responses.length;i++)if(responses[i].error)throw new Error(names[i]+": "+responses[i].error!.message);
  const data:Record<string,unknown>={...EMPTY_WORKSPACE};
  for(let i=0;i<names.length;i++)data[names[i]]=responses[i].data||[];

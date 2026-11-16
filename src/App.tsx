@@ -1,20 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import {
-  Activity, ArrowDownRight, ArrowRight, ArrowUpRight, BadgeCheck, BarChart3, Bell,
+  Activity, ArrowRight, ArrowUpRight, BadgeCheck, BarChart3, Bell,
   BookOpenCheck, BriefcaseBusiness, Building2, ChartNoAxesCombined, Check, ChevronDown,
   ChevronRight, CircleAlert, Database, FileDown, FileSearch, FileUp, Filter, Globe2,
-  Layers3, LayoutDashboard, Link2, LoaderCircle, LockKeyhole, LogOut, Menu, Network,
+  Layers3, LayoutDashboard, Link2, LockKeyhole, LogOut, Menu, Network,
   Package, Plus, RefreshCw, Scale, Search, ShieldCheck, SlidersHorizontal, Sparkles, X
 } from "lucide-react";
 import { EntityForm } from "./components/EntityForm";
 import { ResearchPanel, type OfficialCompany } from "./components/ResearchPanel";
-import { automaticSignals, companyContext, companyName, marketStats, procurementMetrics, productName, productOffers, relationLabel, summary } from "./lib/analytics";
+import { automaticSignals, companyContext, companyName, marketStats, procurementMetrics, productOffers, relationLabel, summary } from "./lib/analytics";
 import { parseCsv, field as csvField } from "./lib/csv";
 import { insertRow, loadWorkspace } from "./lib/data";
 import { DEMO } from "./lib/demo";
 import { configured, researchEndpoint, supabase } from "./lib/supabase";
-import type { Company, EntityKind, EvidenceStatus, View, Workspace } from "./lib/types";
+import type { EntityKind, EvidenceStatus, View, Workspace } from "./lib/types";
 import { EMPTY_WORKSPACE } from "./lib/types";
 import { currency, dateLabel, downloadCsv, safeHttpUrl, toCsv, validInn } from "./lib/validation";
 
@@ -214,7 +214,6 @@ export default function App(){
  }
 
  const toolbar=(kind:EntityKind,label="Добавить")=><div className="toolbar"><button className="btn line" onClick={exportView}><FileDown size={16}/> Экспорт CSV</button><button className="btn primary" onClick={()=>openForm(kind)}><Plus size={16}/> {label}</button></div>;
- const openCompany=(id:string)=>{setSelectedCompany(id);goto("companies")};
 
  return <div className="app">
   <aside className={"sidebar "+(mobileNav?"mobile-open":"")}>

@@ -1,5 +1,5 @@
 import type { ImportPreview } from "../types";
-import { safeUrl, validInn } from "./analytics";
+import { safeHttpUrl as safeUrl, validInn } from "./validation";
 
 function canonical(k: string) { return k.toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""); }
 function val(row:Record<string,string>,labels:string[]):string { for(const k of labels){const v=row[canonical(k)];if(v !== undefined)return v.trim();}return ""; }
@@ -119,7 +119,7 @@ export function fromXml(xml:string,filename:string):ImportPreview {
       if(!number)throw new Error("Не указан номер договора");
       const customerName=customer?find(customer,["fullName","name"])?.textContent?.trim()||"":"";
       const price=find(x,["contractPrice","price"])?.textContent?.trim()||"";
-      const row=mapImportRow("tenders",{инн,номерзакупки:number,заказчик:customerName,типсобытия:"договор",закон:x.localName==="contract223"?"223-ФЗ":"44-ФЗ",сумма:price});
+      const row=mapImportRow("tenders",{инн:inn,номерзакупки:number,заказчик:customerName,типсобытия:"договор",закон:x.localName==="contract223"?"223-ФЗ":"44-ФЗ",сумма:price});
       row.source_provider="xml_upload";items.push(row);
     }catch(e){errors.push("Контракт "+(i+1)+": "+(e instanceof Error?e.message:String(e)));}
   });
