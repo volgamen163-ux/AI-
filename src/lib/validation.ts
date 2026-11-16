@@ -16,7 +16,24 @@ export function safeHttpUrl(s?: string | null): string | null {
   } catch { return null; }
 }
 export const currency = (v: number, code = "RUB") => new Intl.NumberFormat("ru-RU", { style: "currency", currency: code, maximumFractionDigits: 0 }).format(v);
-export const dateLabel = (v?: string | null) => v ? new Date(v).toLocaleDateString("ru-RU") : "Не указана";
+export function dateLabel(v?: string | null): string {
+  if (!v) return "Не указана";
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (dateOnly) {
+    const [, year, month, day] = dateOnly;
+    const numericYear = Number(year), numericMonth = Number(month), numericDay = Number(day);
+    const dt = new Date(Date.UTC(numericYear, numericMonth - 1, numericDay));
+    if (
+      dt.getUTCFullYear() !== numericYear ||
+      dt.getUTCMonth() + 1 !== numericMonth ||
+      dt.getUTCDate() !== numericDay
+    ) return "Некорректная дата";
+    return day + "." + month + "." + year;
+  }
+  const timestamp = new Date(v);
+  if (Number.isNaN(timestamp.getTime())) return "Некорректная дата";
+  return timestamp.toLocaleDateString("ru-RU", { timeZone: "UTC" });
+}
 export const norm = (s?: string | null) => String(s || "").toLocaleLowerCase("ru").replace(/ё/g,"е").replace(/[\s"«»]/g,"").trim();
 export function escapeCsv(value: unknown): string {
   let s = String(value == null ? "" : value);
