@@ -11,6 +11,9 @@ import { EntityForm } from "./components/EntityForm";
 import { ResearchPanel, type OfficialCompany } from "./components/ResearchPanel";
 import { automaticSignals, companyContext, companyName, marketStats, procurementMetrics, productOffers, relationLabel, summary } from "./lib/analytics";
 import { parseCsv, field as csvField } from "./lib/csv";
+import { fromXml } from "./lib/importers";
+import { prepareXmlImport } from "./lib/intake";
+import type { ImportPreview as XmlPreview } from "./types";
 import { insertRow, loadWorkspace } from "./lib/data";
 import { DEMO } from "./lib/demo";
 import { configured, researchEndpoint, supabase } from "./lib/supabase";
@@ -71,6 +74,7 @@ export default function App(){
  const [importRows,setImportRows]=useState<Record<string,string>[]>([]);
  const [importFilename,setImportFilename]=useState("");
  const [importErrors,setImportErrors]=useState<string[]>([]);
+ const [xmlPreview,setXmlPreview]=useState<XmlPreview|null>(null);
  const dataset=mode==="demo"?DEMO:workspace;
  const metrics=useMemo(()=>summary(dataset),[dataset]);
  const isDemo=mode==="demo";
@@ -155,9 +159,25 @@ export default function App(){
  }
  async function fileChosen(file:File|null){
   if(!file)return;
-  setImportErrors([]);setImportRows([]);setImportFilename(file.name);
+  setImportErrors([]);setImportRows([]);setXmlPreview(null);setImportFilename(file.name);
   if(file.size>1500000){setImportErrors(["Слишком большой файл (максимум 1,5 МБ)"]);return;}
-  if(!file.name.toLowerCase().endsWith(".csv")){setImportErrors(["Загрузите CSV UTF-8. XML ФНС и ЕИС пока доступны в версии v1.0."]);return;}
+  if(file.name.toLowerCase().endsWith(".xml")) {
+   try{
+    const bytes=new Uint8Array(await file.arrayBuffer());
+    const declaration=new TextDecoder("iso-8859-1").decode(bytes.slice(0,260));
+    const declared=(declaration.match(/<\?xml[^>]*encoding\s*=\s*["']([^"']+)["']/i)||[])[1]||"";
+    let encoding=bytes[0]===255&&bytes[1]===254?"utf-16le":bytes[0]===254&&bytes[1]===255?"utf-16be":bytes[0]===239&&bytes[1]===187&&bytes[2]===191?"utf-8":declared||"utf-8";
+    if(/^cp1251$/i.test(encoding))encoding="windows-1251";
+    if(!/^(?:utf-8|utf8|utf-16|utf-16le|utf-16be|windows-1251)$/i.test(encoding))throw Error("Неподдерживаемая кодировка XML");
+    const text=new TextDecoder(encoding,{fatal:true}).decode(bytes);
+    const result=fromXml(text,file.name);
+    setXmlPreview(result);
+    setImportKind(result.type==="companies"?"company":result.type==="tenders"?"procurement":result.type==="cases"?"court":"product");
+    setImportErrors(result.errors);
+   }catch(e){setImportErrors([e instanceof Error?e.message:String(e)])}
+   return;
+  }
+  if(!file.name.toLowerCase().endsWith(".csv")){setImportErrors(["Выберите CSV или XML"]);return;}
   try{const parsed=parseCsv(await file.text());setImportRows(parsed);}catch(e){setImportErrors([e instanceof Error?e.message:String(e)])}
  }
  function csvObject(r:Record<string,string>):{kind:EntityKind,row:Record<string,unknown>}{
@@ -199,6 +219,7 @@ export default function App(){
   return {kind:"court",row:{company_id:company.id,case_number:number,court_name:f("суд","court"),role:"unknown",stage:f("статус","stage")||"Не установлена",source_url,source_provider:"csv",verification_status:"unverified",is_demo:false}};
  }
  function importPreview(){
+  if(xmlPreview){const ready=prepareXmlImport(xmlPreview,dataset);return {valid:ready.valid,errors:ready.errors};}
   const valid:{kind:EntityKind;row:Record<string,unknown>}[]=[];const errors:string[]=[];
   importRows.forEach((r,i)=>{try{valid.push(csvObject(r))}catch(e){errors.push("Строка "+(i+2)+": "+(e instanceof Error?e.message:String(e)))}});
   return {valid,errors};
@@ -209,7 +230,7 @@ export default function App(){
   setImportErrors(errors);if(!valid.length){notify("Нет корректных записей");return;}
   setSaving(true);let done=0;const failed:string[]=[];
   try{for(const item of valid){try{await insertRow(item.kind,user.id,item.row);done++;}catch(e){failed.push(e instanceof Error?e.message:String(e))}}
-   setWorkspace(await loadWorkspace());setImportRows([]);setImportErrors([...errors,...failed].slice(0,12));notify("Загружено: "+done+"; пропущено: "+(errors.length+failed.length));
+   setWorkspace(await loadWorkspace());setImportRows([]);setXmlPreview(null);setImportErrors([...errors,...failed].slice(0,12));notify("Загружено: "+done+"; пропущено: "+(errors.length+failed.length));
   }finally{setSaving(false)}
  }
 
@@ -282,8 +303,8 @@ export default function App(){
      <div className="inline-alert gold"><Globe2 size={18}/> Плагины, доступные в ChatGPT, не передают автоматически свои токены приложению. Для каждой внешней базы нужны законный API, серверный адаптер, права и журнал запросов.</div>
     </>}
     {view==="imports"&&<>
-     <SectionTop kicker="DATA OPERATIONS" title="Импорт данных" subtitle="Загружайте разрешённые CSV-выгрузки: сначала предварительный разбор, затем импорт в личную базу." action={<button className="btn line" onClick={()=>goto("sources")}>Источники <ArrowRight size={16}/></button>}/>
-     <div className="two-column"><section className="panel upload-panel"><div className="panel-top"><h2>Новый импорт</h2><span className="evidence unknown">Проверка перед записью</span></div><label className="field"><span>Сущность</span><select value={importKind} onChange={e=>{setImportKind(e.target.value as EntityKind);setImportRows([]);setImportErrors([])}}>{Object.entries(kindLabels).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select></label><label className="file-drop"><FileUp size={29}/><strong>Выбрать CSV через «Файлы»</strong><small>UTF-8 · до 250 строк · максимум 1,5 МБ</small><input type="file" accept=".csv,text/csv" onChange={e=>void fileChosen(e.target.files?.[0]||null)}/></label><div className="upload-explain"><b>Поддерживаемые колонки</b><p>{importKind==="company"?"ИНН;Название;Регион;Отрасль;Руководитель;Адрес;Источник":importKind==="product"?"ИНН;Товар;Категория;Единица;Источник":importKind==="procurement"?"ИНН;Номер;Заказчик;Событие;Сумма;Источник":importKind==="court"?"ИНН;Номер дела;Суд;Статус;Источник":"Товар;Продавец;Цена;Источник"}</p></div><a className="text-link" href="https://nexus-analytics-hub-volgamen163-1027.vercel.app/?view=imports" target="_blank" rel="noopener noreferrer">Старый импорт XML ФНС / ЕИС (v1.0) <ArrowUpRight size={15}/></a></section><section className="panel upload-panel"><div className="panel-top"><h2>Предварительная проверка</h2><span className="tiny-count">{importFilename||"Файл не выбран"}</span></div>{importRows.length?(()=>{const res=importPreview();return <><div className="kv two"><div><small>Всего строк</small><b>{importRows.length}</b></div><div><small>Готово к импорту</small><b>{res.valid.length}</b></div></div>{[...importErrors,...res.errors].slice(0,6).map((x,i)=><div className="import-error" key={i}>{x}</div>)}<p className="import-description">Все импортируемые записи получат статус «Не проверено». Совпадения компаний проверяются по ИНН.</p><button className="btn primary full" disabled={saving||!res.valid.length} onClick={()=>void commitCsv()}>{saving?"Добавляем…":"Добавить "+res.valid.length+" записей в Supabase"}</button></>})():<Empty heading="Загрузите файл" copy="Здесь появятся ошибки валидации и количество подходящих строк."/>}{importErrors.map((x,i)=><div key={i} className="import-error">{x}</div>)}</section></div>
+     <SectionTop kicker="DATA OPERATIONS" title="Импорт данных" subtitle="Загружайте CSV и XML ФНС/ЕИС: сначала предварительный просмотр, затем сохранение с отметкой источника." action={<button className="btn line" onClick={()=>goto("sources")}>Источники <ArrowRight size={16}/></button>}/>
+     <div className="two-column"><section className="panel upload-panel"><div className="panel-top"><h2>Новый импорт</h2><span className="evidence unknown">Проверка перед записью</span></div><label className="field"><span>Сущность</span><select value={importKind} onChange={e=>{setImportKind(e.target.value as EntityKind);setImportRows([]);setXmlPreview(null);setImportErrors([])}}>{Object.entries(kindLabels).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select></label><label className="file-drop"><FileUp size={29}/><strong>Выбрать CSV или XML через «Файлы»</strong><small>CSV UTF-8 · XML ФНС и контракты 44/223 · до 1,5 МБ</small><input type="file" accept=".csv,.xml,text/csv,application/xml,text/xml" onChange={e=>void fileChosen(e.target.files?.[0]||null)}/></label><div className="upload-explain"><b>Поддерживаемые колонки</b><p>{importKind==="company"?"ИНН;Название;Регион;Отрасль;Руководитель;Адрес;Источник":importKind==="product"?"ИНН;Товар;Категория;Единица;Источник":importKind==="procurement"?"ИНН;Номер;Заказчик;Событие;Сумма;Источник":importKind==="court"?"ИНН;Номер дела;Суд;Статус;Источник":"Товар;Продавец;Цена;Источник"}</p></div><p className="import-description">XML распознаётся в браузере. Подписи и подлинность выписок не проверяются. Для контракта сначала добавьте компанию поставщика с тем же ИНН.</p></section><section className="panel upload-panel"><div className="panel-top"><h2>Предварительная проверка</h2><span className="tiny-count">{importFilename||"Файл не выбран"}</span></div>{(importRows.length||xmlPreview)?(()=>{const res=importPreview();return <><div className="kv two"><div><small>Всего строк</small><b>{xmlPreview?.total??importRows.length}</b></div><div><small>Готово к импорту</small><b>{res.valid.length}</b></div></div>{[...importErrors,...res.errors].slice(0,6).map((x,i)=><div className="import-error" key={i}>{x}</div>)}<p className="import-description">Все импортируемые записи получат статус «Не проверено». Совпадения компаний проверяются по ИНН.</p><button className="btn primary full" disabled={saving||!res.valid.length} onClick={()=>void commitCsv()}>{saving?"Добавляем…":"Добавить "+res.valid.length+" записей в Supabase"}</button></>})():<Empty heading="Загрузите файл" copy="Здесь появятся ошибки валидации и количество подходящих строк."/>}{importErrors.map((x,i)=><div key={i} className="import-error">{x}</div>)}</section></div>
     </>}
     <footer className="content-footer"><span>NEXUS ANALYTICS <b>2.0</b> · STAGING</span><span><ShieldCheck size={14}/> Проверка источников обязательна · {configured?"Supabase подключён":"Supabase не настроен"}</span></footer>
    </div>
