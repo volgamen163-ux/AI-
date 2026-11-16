@@ -16,7 +16,8 @@ import { parseCsv, field as csvField } from "./lib/csv";
 import { fromXml } from "./lib/importers";
 import { prepareXmlImport } from "./lib/intake";
 import type { ImportPreview as XmlPreview } from "./types";
-import { insertRow, loadWorkspace } from "./lib/data";
+import { insertRow, loadWorkspace, getImportJobs, startImportJob, endImportJob, type IngestionJob } from "./lib/data";
+import { auditedImport } from "./lib/import-journal";
 import { DEMO } from "./lib/demo";
 import { configured, researchEndpoint, supabase } from "./lib/supabase";
 import type { EntityKind, EvidenceStatus, View, Workspace } from "./lib/types";
@@ -77,6 +78,8 @@ export default function App(){
  const [importFilename,setImportFilename]=useState("");
  const [importErrors,setImportErrors]=useState<string[]>([]);
  const [xmlPreview,setXmlPreview]=useState<XmlPreview|null>(null);
+ const [importJobs,setImportJobs]=useState<IngestionJob[]>([]);
+ const [importLocked,setImportLocked]=useState(false);
  const dataset=mode==="demo"?DEMO:workspace;
  const metrics=useMemo(()=>summary(dataset),[dataset]);
  const isDemo=mode==="demo";
@@ -95,7 +98,7 @@ export default function App(){
  useEffect(()=>{
   if(!user||mode!=="cloud")return;
   let active=true;setLoading(true);
-  void loadWorkspace().then(data=>{if(active)setWorkspace(data)}).catch(e=>{if(active)notify(String(e))}).finally(()=>{if(active)setLoading(false)});
+  void Promise.all([loadWorkspace(),getImportJobs()]).then(([data,jobs])=>{if(active){setWorkspace(data);setImportJobs(jobs);}}).catch(e=>{if(active)notify(String(e))}).finally(()=>{if(active)setLoading(false)});
   return()=>{active=false};
  },[user?.id,mode]);
  useEffect(()=>{
@@ -111,7 +114,7 @@ export default function App(){
  async function refresh(){
   if(!user||mode!=="cloud")return;
   setLoading(true);
-  try{setWorkspace(await loadWorkspace());notify("Данные обновлены из Supabase")}catch(e){notify(e instanceof Error?e.message:String(e))}
+  try{const [data,jobs]=await Promise.all([loadWorkspace(),getImportJobs()]);setWorkspace(data);setImportJobs(jobs);notify("Данные и журнал обновлены")}catch(e){notify(e instanceof Error?e.message:String(e))}
   finally{setLoading(false)}
  }
  function openForm(kind:EntityKind){
@@ -161,7 +164,7 @@ export default function App(){
  }
  async function fileChosen(file:File|null){
   if(!file)return;
-  setImportErrors([]);setImportRows([]);setXmlPreview(null);setImportFilename(file.name);
+  setImportErrors([]);setImportRows([]);setXmlPreview(null);setImportFilename(file.name);setImportLocked(false);
   if(file.size>1500000){setImportErrors(["Слишком большой файл (максимум 1,5 МБ)"]);return;}
   if(file.name.toLowerCase().endsWith(".xml")) {
    try{
@@ -228,13 +231,32 @@ export default function App(){
  }
  async function commitCsv(){
   if(!user||isDemo){setAuthOpen(true);return;}
+  if(importLocked){notify("Этот файл уже загружался. Выберите новый файл.");return;}
   const {valid,errors}=importPreview();
-  setImportErrors(errors);if(!valid.length){notify("Нет корректных записей");return;}
-  setSaving(true);let done=0;const failed:string[]=[];
-  try{for(const item of valid){try{await insertRow(item.kind,user.id,item.row);done++;}catch(e){failed.push(e instanceof Error?e.message:String(e))}}
-   setWorkspace(await loadWorkspace());setImportRows([]);setXmlPreview(null);setImportErrors([...errors,...failed].slice(0,12));notify("Загружено: "+done+"; пропущено: "+(errors.length+failed.length));
-  }finally{setSaving(false)}
- }
+  setImportErrors(errors);
+  if(!valid.length){notify("Нет корректных записей");return;}
+  setSaving(true);
+  const uid=user.id;
+  try {
+    const outcome=await auditedImport(valid,errors,xmlPreview?.total??importRows.length,{
+      start:(counters)=>startImportJob(uid,xmlPreview?"xml_upload":"csv_upload",
+        {filename:importFilename.slice(0,160),kind:importKind},counters),
+      insert:(item)=>insertRow(item.kind,uid,item.row),
+      finish:(id,status,counters,message)=>endImportJob(uid,id,status,counters,message),
+    });
+    setImportLocked(true);
+    setImportErrors(outcome.errors.concat(outcome.journalError?[outcome.journalError]:[]).slice(0,12));
+    try {
+      const [next,jobs]=await Promise.all([loadWorkspace(),getImportJobs()]);
+      setWorkspace(next);setImportJobs(jobs);
+    } catch(e) { notify("Записи могли сохраниться, обнови страницу: "+String(e)); }
+    notify("Сохранено: "+outcome.counters.inserted+" · Ошибки: "+outcome.counters.failed+
+      " · Отклонено: "+outcome.counters.rejected);
+  } catch(e) {
+    setImportErrors([e instanceof Error?e.message:String(e)]);
+    notify("Импорт не выполнен. Сначала нужен доступ к журналу.");
+  } finally {setSaving(false);}
+}
 
  const toolbar=(kind:EntityKind,label="Добавить")=><div className="toolbar"><button className="btn line" onClick={exportView}><FileDown size={16}/> Экспорт CSV</button><button className="btn primary" onClick={()=>openForm(kind)}><Plus size={16}/> {label}</button></div>;
 
@@ -307,9 +329,23 @@ export default function App(){
     </>}
     {view==="imports"&&<>
      <SectionTop kicker="DATA OPERATIONS" title="Импорт данных" subtitle="Загружайте CSV и XML ФНС/ЕИС: сначала предварительный просмотр, затем сохранение с отметкой источника." action={<button className="btn line" onClick={()=>goto("sources")}>Источники <ArrowRight size={16}/></button>}/>
-     <div className="two-column"><section className="panel upload-panel"><div className="panel-top"><h2>Новый импорт</h2><span className="evidence unknown">Проверка перед записью</span></div><label className="field"><span>Сущность</span><select value={importKind} onChange={e=>{setImportKind(e.target.value as EntityKind);setImportRows([]);setXmlPreview(null);setImportErrors([])}}>{Object.entries(kindLabels).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select></label><label className="file-drop"><FileUp size={29}/><strong>Выбрать CSV или XML через «Файлы»</strong><small>CSV UTF-8 · XML ФНС и контракты 44/223 · до 1,5 МБ</small><input type="file" accept=".csv,.xml,text/csv,application/xml,text/xml" onChange={e=>void fileChosen(e.target.files?.[0]||null)}/></label><div className="upload-explain"><b>Поддерживаемые колонки</b><p>{importKind==="company"?"ИНН;Название;Регион;Отрасль;Руководитель;Адрес;Источник":importKind==="product"?"ИНН;Товар;Категория;Единица;Источник":importKind==="procurement"?"ИНН;Номер;Заказчик;Событие;Сумма;Источник":importKind==="court"?"ИНН;Номер дела;Суд;Статус;Источник":"Товар;Продавец;Цена;Источник"}</p></div><p className="import-description">XML распознаётся в браузере. Подписи и подлинность выписок не проверяются. Для контракта сначала добавьте компанию поставщика с тем же ИНН.</p></section><section className="panel upload-panel"><div className="panel-top"><h2>Предварительная проверка</h2><span className="tiny-count">{importFilename||"Файл не выбран"}</span></div>{(importRows.length||xmlPreview)?(()=>{const res=importPreview();return <><div className="kv two"><div><small>Всего строк</small><b>{xmlPreview?.total??importRows.length}</b></div><div><small>Готово к импорту</small><b>{res.valid.length}</b></div></div>{[...importErrors,...res.errors].slice(0,6).map((x,i)=><div className="import-error" key={i}>{x}</div>)}<p className="import-description">Все импортируемые записи получат статус «Не проверено». Совпадения компаний проверяются по ИНН.</p><button className="btn primary full" disabled={saving||!res.valid.length} onClick={()=>void commitCsv()}>{saving?"Добавляем…":"Добавить "+res.valid.length+" записей в Supabase"}</button></>})():<Empty heading="Загрузите файл" copy="Здесь появятся ошибки валидации и количество подходящих строк."/>}{importErrors.map((x,i)=><div key={i} className="import-error">{x}</div>)}</section></div>
+     <div className="two-column"><section className="panel upload-panel"><div className="panel-top"><h2>Новый импорт</h2><span className="evidence unknown">Проверка перед записью</span></div><label className="field"><span>Сущность</span><select value={importKind} onChange={e=>{setImportKind(e.target.value as EntityKind);setImportRows([]);setXmlPreview(null);setImportErrors([]);setImportLocked(false)}}>{Object.entries(kindLabels).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select></label><label className="file-drop"><FileUp size={29}/><strong>Выбрать CSV или XML через «Файлы»</strong><small>CSV UTF-8 · XML ФНС и контракты 44/223 · до 1,5 МБ</small><input type="file" accept=".csv,.xml,text/csv,application/xml,text/xml" onChange={e=>void fileChosen(e.target.files?.[0]||null)}/></label><div className="upload-explain"><b>Поддерживаемые колонки</b><p>{importKind==="company"?"ИНН;Название;Регион;Отрасль;Руководитель;Адрес;Источник":importKind==="product"?"ИНН;Товар;Категория;Единица;Источник":importKind==="procurement"?"ИНН;Номер;Заказчик;Событие;Сумма;Источник":importKind==="court"?"ИНН;Номер дела;Суд;Статус;Источник":"Товар;Продавец;Цена;Источник"}</p></div><p className="import-description">XML распознаётся в браузере. Подписи и подлинность выписок не проверяются. Для контракта сначала добавьте компанию поставщика с тем же ИНН.</p></section><section className="panel upload-panel"><div className="panel-top"><h2>Предварительная проверка</h2><span className="tiny-count">{importFilename||"Файл не выбран"}</span></div>{(importRows.length||xmlPreview)?(()=>{const res=importPreview();return <><div className="kv two"><div><small>Всего строк</small><b>{xmlPreview?.total??importRows.length}</b></div><div><small>Готово к импорту</small><b>{res.valid.length}</b></div></div>{[...importErrors,...res.errors].slice(0,6).map((x,i)=><div className="import-error" key={i}>{x}</div>)}<p className="import-description">Все импортируемые записи получат статус «Не проверено». Совпадения компаний проверяются по ИНН.</p><button className="btn primary full" disabled={saving||importLocked||!res.valid.length} onClick={()=>void commitCsv()}>{saving?"Добавляем…":importLocked?"Импорт запущен — выберите другой файл":"Добавить "+res.valid.length+" записей в Supabase"}</button></>})():<Empty heading="Загрузите файл" copy="Здесь появятся ошибки валидации и количество подходящих строк."/>}{importErrors.map((x,i)=><div key={i} className="import-error">{x}</div>)}</section></div>
+     <section className="panel" style={{padding:20,marginTop:20}}>
+      <div className="panel-top"><h2>Журнал загрузок</h2><button className="btn line" onClick={()=>void refresh()} disabled={!signedIn}>Обновить</button></div>
+      {!signedIn?<p className="muted">Войдите, чтобы увидеть журнал своих импортов.</p>:
+       importJobs.length===0?<p className="muted">Загрузок ещё не было.</p>:
+       importJobs.map(job=><div key={job.id} style={{padding:"12px 0",borderBottom:"1px solid #e5edf2"}}>
+        <div style={{display:"flex",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+         <strong>{String(job.input_metadata?.filename||"Файл").slice(0,120)}</strong>
+         <span className="evidence unknown">{job.status==="complete"?"Завершено":job.status==="failed"?"Частично / ошибка":job.status==="running"?"Выполняется":"Ожидает"}</span>
+        </div>
+        <small className="muted">{new Date(job.started_at).toLocaleString("ru-RU")} · Записано: {job.counters?.inserted??0} · Отклонено: {job.counters?.rejected??0} · Ошибки: {job.counters?.failed??0}</small>
+        {job.error_message&&<p className="muted" style={{fontSize:11}}>{job.error_message.slice(0,250)}</p>}
+       </div>)}
+      <p className="muted" style={{fontSize:11}}>Журнал фиксирует записи в личной базе, но не подтверждает достоверность первоисточников.</p>
+     </section>
     </>}
-    <footer className="content-footer"><span>NEXUS ANALYTICS <b>2.0</b> · STAGING</span><span><ShieldCheck size={14}/> Проверка источников обязательна · {configured?"Supabase подключён":"Supabase не настроен"}</span></footer>
+    <footer className="content-footer"><span>NEXUS ANALYTICS <b>2.1</b> · STAGING</span><span><ShieldCheck size={14}/> Проверка источников обязательна · {configured?"Supabase подключён":"Supabase не настроен"}</span></footer>
    </div>
   </main>
   <nav className="mobile-bottom" aria-label="Мобильная навигация">{menu.filter(x=>["overview","companies","products","procurements"].includes(x.id)).map(({id,name,icon:Icon})=><button key={id} className={view===id?"active":""} onClick={()=>goto(id)}><Icon size={20}/><small>{name}</small></button>)}<button className={["courts","relations","sources","imports"].includes(view)?"active":""} onClick={()=>setMobileNav(true)}><Menu size={20}/><small>Ещё</small></button></nav>
