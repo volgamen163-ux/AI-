@@ -8,6 +8,7 @@ import {
   Package, Plus, RefreshCw, Scale, Search, ShieldCheck, SlidersHorizontal, Sparkles, X
 } from "lucide-react";
 import { EntityForm } from "./components/EntityForm";
+import { initialViewFromSearch } from "./lib/navigation";
 import { IntegrationHealthPanel } from "./components/IntegrationHealthPanel";
 import { ResearchPanel, type OfficialCompany } from "./components/ResearchPanel";
 import { automaticSignals, companyContext, companyName, marketStats, procurementMetrics, productOffers, relationLabel, summary } from "./lib/analytics";
@@ -52,7 +53,7 @@ function SourceLink({url}:{url?:string|null}){const safe=safeHttpUrl(url);return
 function MiniColumns({values}:{values:number[]}){const mx=Math.max(1,...values);return <div className="mini-bars">{values.map((v,i)=><div key={i} className={"mini-bar b"+i%3} style={{height:String(Math.max(7,v/mx*100))+"%"}}/>)}</div>}
 
 export default function App(){
- const [view,setView]=useState<View>("overview");
+ const [view,setView]=useState<View>(() => initialViewFromSearch(typeof window === "undefined" ? "" : window.location.search));
  const [user,setUser]=useState<User|null>(null);
  const [mode,setMode]=useState<"demo"|"cloud">("demo");
  const [workspace,setWorkspace]=useState<Workspace>(EMPTY_WORKSPACE);
