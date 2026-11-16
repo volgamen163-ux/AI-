@@ -8,6 +8,7 @@ import {
   Package, Plus, RefreshCw, Scale, Search, ShieldCheck, SlidersHorizontal, Sparkles, X
 } from "lucide-react";
 import { EntityForm } from "./components/EntityForm";
+import { CompanyDossier } from "./components/CompanyDossier";
 import { initialViewFromSearch } from "./lib/navigation";
 import { IntegrationHealthPanel } from "./components/IntegrationHealthPanel";
 import { ResearchPanel, type OfficialCompany } from "./components/ResearchPanel";
@@ -26,7 +27,7 @@ import { currency, dateLabel, downloadCsv, safeHttpUrl, toCsv, validInn } from "
 
 type Provider = { id:string; name:string; status:string; scope:string; reason:string; url:string };
 const menu:{id:View;name:string;icon:typeof LayoutDashboard}[]=[
- {id:"overview",name:"Обзор",icon:LayoutDashboard},{id:"companies",name:"Компании",icon:Building2},
+ {id:"overview",name:"Обзор",icon:LayoutDashboard},{id:"companies",name:"Компании",icon:Building2},{id:"dossier",name:"Досье и отчёт",icon:FileSearch},
  {id:"products",name:"Товары и цены",icon:Package},{id:"procurements",name:"Закупки",icon:BriefcaseBusiness},
  {id:"courts",name:"Судебные дела",icon:Scale},{id:"relations",name:"Связи компаний",icon:Network},
  {id:"sources",name:"Источники данных",icon:Database},{id:"imports",name:"Импорт",icon:FileUp}
@@ -87,6 +88,9 @@ export default function App(){
  const signalPairs=useMemo(()=>automaticSignals(dataset.companies),[dataset.companies]);
  const proc=useMemo(()=>procurementMetrics(dataset.procurements.map(x=>isDemo?{...x,is_demo:false}:x)),[dataset.procurements,isDemo]);
  const pageTitle=menu.find(x=>x.id===view)?.name||"Обзор";
+ const selectedInn=typeof window==="undefined"?"":new URLSearchParams(window.location.search).get("inn")||"";
+ const dossierCompany=dataset.companies.find(c=>c.id===selectedCompany)||dataset.companies.find(c=>c.inn===selectedInn)||(selectedInn?undefined:dataset.companies[0]);
+
 
  useEffect(()=>{
   if(!supabase)return;
@@ -150,9 +154,22 @@ export default function App(){
   if(!o.verified||!validInn(o.inn)||!safeHttpUrl(o.sourceUrl))throw new Error("Нельзя сохранить неподтверждённый результат");
   if(workspace.companies.some(x=>x.inn===o.inn)){notify("Компания с этим ИНН уже в базе");return;}
   await insertRow("company",user.id,{inn:o.inn,ogrn:o.ogrn,name:o.name,region:o.region||"",activity:"Финансовые услуги",website:safeHttpUrl(o.site),legal_address:o.address,source_url:o.sourceUrl,source_provider:"cbr",verification_status:"official_verified",checked_at:o.retrievedAt||new Date().toISOString()});
-  setWorkspace(await loadWorkspace());notify("Реквизиты сохранены с подтверждением Банка России");
+  const next=await loadWorkspace();setWorkspace(next);notify("Реквизиты сохранены с подтверждением Банка России");
+  const saved=next.companies.find(c=>c.inn===o.inn);
+  if(saved)openDossier(saved);
  }
- function goto(v:View){setView(v);setMobileNav(false);window.scrollTo({top:0,behavior:"smooth"})}
+ function goto(v:View){
+  setView(v);setMobileNav(false);
+  const next=new URL(window.location.href);next.searchParams.set("view",v);
+  if(v!=="dossier")next.searchParams.delete("inn");
+  window.history.replaceState(null,"",next.pathname+next.search);
+  window.scrollTo({top:0,behavior:"smooth"});
+ }
+ function openDossier(c:import("./lib/types").Company){
+  setSelectedCompany(c.id);goto("dossier");
+  const next=new URL(window.location.href);next.searchParams.set("inn",c.inn);
+  window.history.replaceState(null,"",next.pathname+next.search);
+ }
  function exportView(){
   let headers:string[]=[],rows:unknown[][]=[];
   if(view==="companies"){headers=["Наименование","ИНН","ОГРН","Регион","Отрасль","Источник","Проверка"];rows=dataset.companies.map(c=>[c.name,c.inn,c.ogrn,c.region,c.activity,c.source_url,c.verification_status])}
@@ -282,7 +299,7 @@ export default function App(){
     {view==="overview"&&<>
      <section className="hero">
       <div className="hero-art"><div className="orb one"/><div className="orb two"/><div className="hero-gridlines"/></div>
-      <div className="hero-text"><span className="eyebrow light"><Sparkles size={13}/> НОВЫЙ СТАНДАРТ БИЗНЕС-АНАЛИТИКИ</span><h1>Видеть больше.<br/><em>Решать точнее.</em></h1><p>Компании, поставщики, рыночные цены, закупки, судебные дела и связи — в единой системе с прозрачным происхождением данных.</p><div className="row wrap"><button className="btn on-dark" onClick={()=>goto("companies")}>Исследовать компании <ArrowRight size={17}/></button><button className="btn hero-outline" onClick={()=>goto("sources")}>Источники данных <ArrowUpRight size={16}/></button></div></div>
+      <div className="hero-text"><span className="eyebrow light"><Sparkles size={13}/> НОВЫЙ СТАНДАРТ БИЗНЕС-АНАЛИТИКИ</span><h1>Видеть больше.<br/><em>Решать точнее.</em></h1><p>Компании, поставщики, рыночные цены, закупки, судебные дела и связи — в единой системе с прозрачным происхождением данных.</p><div className="row wrap"><button className="btn on-dark" onClick={()=>goto("dossier")}>Досье компании <ArrowRight size={17}/></button><button className="btn hero-outline" onClick={()=>goto("sources")}>Источники данных <ArrowUpRight size={16}/></button></div></div>
       <div className="hero-visual"><div className="visual-card"><div className="v-top"><span className="live-pulse"/> МОДЕЛЬ АНАЛИЗА <span>v2.0</span></div><div className="v-title">Доказательная аналитика</div><MiniColumns values={[35,55,42,70,58,82,68,95]}/><div className="v-line"><div><b>{metrics.companies}</b><span>Компаний</span></div><div><b>{metrics.products}</b><span>Товаров</span></div><div><b>{metrics.signals}</b><span>Сигналов</span></div></div><div className="v-proof"><ShieldCheck size={15}/> Источники и статусы разделены</div></div></div>
      </section>
      <div className="headline-strip"><span>ОБЗОР ПРОСТРАНСТВА</span><span>{isDemo?"Все показатели ниже — вымышленные учебные данные":"Данные только вашего аккаунта Supabase"}</span></div>
@@ -295,9 +312,13 @@ export default function App(){
      <div className="inline-alert"><ShieldCheck size={16}/> Совпадение директора или адреса — сигнал для проверки, а не доказательство аффилированности.</div>
      <div className="panel search-panel"><Search size={18}/><input value={companyQuery} onChange={e=>setCompanyQuery(e.target.value)} placeholder="Поиск по названию, ИНН, региону или отрасли"/><span className="item-count">{dataset.companies.length} организаций</span></div>
      <div className="company-layout"><div className="panel company-list"><div className="panel-top"><h2>Каталог</h2><span className="tiny-count">Сведения из вашей базы</span></div>{dataset.companies.filter(c=>[c.name,c.inn,c.region,c.activity].join(" ").toLowerCase().includes(companyQuery.toLowerCase())).length?dataset.companies.filter(c=>[c.name,c.inn,c.region,c.activity].join(" ").toLowerCase().includes(companyQuery.toLowerCase())).map(c=><button key={c.id} className={"company-row "+((selectedCompany||dataset.companies[0]?.id)===c.id?"selected":"")} onClick={()=>setSelectedCompany(c.id)}><span className="company-monogram">{c.name.replace(/[^А-ЯA-Z]/g,"").slice(0,2)||"CO"}</span><span className="company-info"><strong>{c.name}</strong><small>ИНН {c.inn} · {c.region||"Регион не указан"}</small></span><ChevronRight size={17}/></button>):<Empty heading="Компаний пока нет" copy="Добавьте контрагента или сохраните подтверждённый результат поиска по ИНН."/>}</div>
-      <div className="panel detail-panel">{(()=>{const c=dataset.companies.find(c=>c.id===(selectedCompany||dataset.companies[0]?.id));if(!c)return <Empty heading="Выберите компанию" copy="Для карточки нужны записи в каталоге."/>;const ctx=companyContext(dataset,c.id);return <><div className="panel-top"><span className="eyebrow">COMPANY PROFILE</span><Evidence status={c.verification_status} source={c.source_url}/></div><h2 className="company-title">{c.name}</h2><div className="detail-meta">{c.activity||"Отрасль не указана"} · {c.region||"Регион не указан"}</div><div className="kv two three"><div><small>ИНН</small><b>{c.inn}</b></div><div><small>ОГРН</small><b>{c.ogrn||"Не указан"}</b></div><div><small>Руководитель</small><b>{c.director||"Не указан"}</b></div><div><small>Адрес</small><b>{c.legal_address||"Не указан"}</b></div></div><div className="detail-tally">{[{label:"Товаров",num:ctx.products.length,view:"products" as View},{label:"Закупок",num:ctx.procurements.length,view:"procurements" as View},{label:"Судебных записей",num:ctx.courts.length,view:"courts" as View}].map(t=><button key={t.label} onClick={()=>goto(t.view)}><strong>{t.num}</strong><span>{t.label}</span><ArrowUpRight size={14}/></button>)}</div><div className="row wrap company-links"><SourceLink url={c.source_url}/>{safeHttpUrl(c.website)&&<a className="btn line" target="_blank" rel="noopener noreferrer" href={c.website||undefined}>Сайт компании <ArrowUpRight size={15}/></a>}</div><div className="detail-end">Обратите внимание: если источник не проверен, информация остаётся непроверенной.</div></>})()}</div></div>
+      <div className="panel detail-panel">{(()=>{const c=dataset.companies.find(c=>c.id===(selectedCompany||dataset.companies[0]?.id));if(!c)return <Empty heading="Выберите компанию" copy="Для карточки нужны записи в каталоге."/>;const ctx=companyContext(dataset,c.id);return <><div className="panel-top"><span className="eyebrow">COMPANY PROFILE</span><Evidence status={c.verification_status} source={c.source_url}/></div><h2 className="company-title">{c.name}</h2><div className="detail-meta">{c.activity||"Отрасль не указана"} · {c.region||"Регион не указан"}</div><div className="kv two three"><div><small>ИНН</small><b>{c.inn}</b></div><div><small>ОГРН</small><b>{c.ogrn||"Не указан"}</b></div><div><small>Руководитель</small><b>{c.director||"Не указан"}</b></div><div><small>Адрес</small><b>{c.legal_address||"Не указан"}</b></div></div><div className="detail-tally">{[{label:"Товаров",num:ctx.products.length,view:"products" as View},{label:"Закупок",num:ctx.procurements.length,view:"procurements" as View},{label:"Судебных записей",num:ctx.courts.length,view:"courts" as View}].map(t=><button key={t.label} onClick={()=>goto(t.view)}><strong>{t.num}</strong><span>{t.label}</span><ArrowUpRight size={14}/></button>)}</div><div className="row wrap company-links"><button className="btn primary" onClick={()=>openDossier(c)}><FileSearch size={15}/> Досье и отчёт <ArrowRight size={15}/></button><SourceLink url={c.source_url}/>{safeHttpUrl(c.website)&&<a className="btn line" target="_blank" rel="noopener noreferrer" href={c.website||undefined}>Сайт компании <ArrowUpRight size={15}/></a>}</div><div className="detail-end">Обратите внимание: если источник не проверен, информация остаётся непроверенной.</div></>})()}</div></div>
      <ResearchPanel signedIn={signedIn} onSave={saveOfficial}/>
     </>}
+    {view==="dossier"&&<CompanyDossier
+     data={dataset} company={dossierCompany} isDemo={isDemo}
+     onSelect={openDossier} onPage={goto} onBack={()=>goto("companies")}
+    />}
     {view==="products"&&<>
      <SectionTop kicker="MARKET INTELLIGENCE" title="Продукция и цены" subtitle="Сравнение реальных загруженных предложений, наличие товара и актуальность рыночных источников." action={toolbar("product","Добавить товар")}/>
      <div className="two-column"><section className="panel"><div className="panel-top"><div><span className="eyebrow">КАТАЛОГ</span><h2>Товарные позиции</h2></div><span className="tiny-count">{dataset.products.length} товаров</span></div>{dataset.products.length?dataset.products.map(p=><button key={p.id} onClick={()=>setSelectedProduct(p.id)} className={"product-row "+((selectedProduct||dataset.products[0]?.id)===p.id?"selected":"")}><span className="product-icon"><Package size={19}/></span><span className="product-info"><strong>{p.name}</strong><small>{companyName(dataset,p.company_id)} · {p.category||"Без категории"}</small></span><span className={"stock-chip "+p.availability}>{({unknown:"Наличие неизвестно",in_stock:"В наличии",on_request:"Под заказ",out_of_stock:"Нет в наличии"})[p.availability]}</span></button>):<Empty heading="Нет товаров" copy="Добавьте товар, чтобы начать сравнивать ценовые предложения."/>}</section><section className="panel"><div className="panel-top"><div><span className="eyebrow">MARKET BENCHMARK</span><h2>Анализ предложения</h2></div><button className="btn small line" onClick={()=>openForm("offer")}><Plus size={15}/> Добавить цену</button></div>{(()=>{const p=dataset.products.find(p=>p.id===(selectedProduct||dataset.products[0]?.id));if(!p)return <Empty heading="Выберите товар" copy="Сравнивайте цены из разных источников."/>;const offers=productOffers(dataset,p);const m=marketStats(offers);return <><h3 className="selection-title">{p.name}</h3><div className="selection-small">Продавец: {companyName(dataset,p.company_id)}</div><div className="kv three">{m?<><div><small>Минимальная цена</small><b>{currency(m.min)}</b></div><div><small>Медиана</small><b>{currency(m.median)}</b></div><div><small>Максимальная цена</small><b>{currency(m.max)}</b></div></>:<div><small>Рыночная цена</small><b>Нет сведений</b></div>}</div>{m?<div className="price-range"><div className="range-head"><span>Диапазон загруженных цен</span><b>{m.count} предложений</b></div><div className="range-track"><div className="range-fill"/></div><p>Предложений «в наличии»: {m.inStock}. Остатки не подтверждены без источника.</p></div>:<div className="inline-alert">Без источников нельзя рассчитать рыночную стоимость.</div>}<div className="offers">{offers.map(o=><div key={o.id} className="offer-row"><div><strong>{o.seller_name}</strong><small>{dateLabel(o.observed_at)} · {o.stock_status==="in_stock"?"В наличии":o.stock_status==="on_request"?"Под заказ":"Наличие не подтверждено"}</small><SourceLink url={o.source_url}/></div><b>{currency(o.unit_price)}</b></div>)}</div></>})()}</section></div>
@@ -345,10 +366,10 @@ export default function App(){
       <p className="muted" style={{fontSize:11}}>Журнал фиксирует записи в личной базе, но не подтверждает достоверность первоисточников.</p>
      </section>
     </>}
-    <footer className="content-footer"><span>NEXUS ANALYTICS <b>2.1</b> · STAGING</span><span><ShieldCheck size={14}/> Проверка источников обязательна · {configured?"Supabase подключён":"Supabase не настроен"}</span></footer>
+    <footer className="content-footer"><span>NEXUS ANALYTICS <b>2.2</b> · STAGING</span><span><ShieldCheck size={14}/> Проверка источников обязательна · {configured?"Supabase подключён":"Supabase не настроен"}</span></footer>
    </div>
   </main>
-  <nav className="mobile-bottom" aria-label="Мобильная навигация">{menu.filter(x=>["overview","companies","products","procurements"].includes(x.id)).map(({id,name,icon:Icon})=><button key={id} className={view===id?"active":""} onClick={()=>goto(id)}><Icon size={20}/><small>{name}</small></button>)}<button className={["courts","relations","sources","imports"].includes(view)?"active":""} onClick={()=>setMobileNav(true)}><Menu size={20}/><small>Ещё</small></button></nav>
+  <nav className="mobile-bottom" aria-label="Мобильная навигация">{menu.filter(x=>["overview","companies","products","procurements"].includes(x.id)).map(({id,name,icon:Icon})=><button key={id} className={view===id?"active":""} onClick={()=>goto(id)}><Icon size={20}/><small>{name}</small></button>)}<button className={["courts","relations","sources","imports","dossier"].includes(view)?"active":""} onClick={()=>setMobileNav(true)}><Menu size={20}/><small>Ещё</small></button></nav>
   {toast&&<div className="toast" role="status"><Bell size={17}/>{toast}<button aria-label="Скрыть" onClick={()=>setToast("")}><X size={15}/></button></div>}
   {form&&<EntityForm kind={form} workspace={dataset} onSave={saveForm} onClose={()=>setForm(null)}/>}
   {authOpen&&<div className="modal-scrim" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)setAuthOpen(false)}}><section className="auth-dialog" role="dialog" aria-modal="true"><div className="dialog-top"><div><span className="eyebrow">NEXUS SECURE WORKSPACE</span><h2>{authMode==="signin"?"Войти в аккаунт":"Создать пространство"}</h2></div><button className="icon-btn" onClick={()=>setAuthOpen(false)} aria-label="Закрыть"><X size={20}/></button></div><p>Личный каталог компаний и аналитические записи защищены политиками Supabase RLS.</p><form onSubmit={e=>{e.preventDefault();void handleAuth()}}><label className="field"><span>Email</span><input type="email" value={email} onChange={e=>setEmail(e.target.value)} required autoComplete="email"/></label><label className="field"><span>Пароль</span><input type="password" value={password} onChange={e=>setPassword(e.target.value)} required minLength={6} autoComplete={authMode==="signin"?"current-password":"new-password"}/></label>{authError&&<div className="inline-alert danger">{authError}</div>}<button className="btn primary full" disabled={!configured||saving}>{saving?"Проверяем…":authMode==="signin"?"Войти в Supabase":"Зарегистрироваться"}</button></form><button className="auth-switch" onClick={()=>{setAuthMode(authMode==="signin"?"signup":"signin");setAuthError("")}}>{authMode==="signin"?"Нет аккаунта? Создать новый":"Есть аккаунт? Войти"}</button><div className="auth-foot"><LockKeyhole size={15}/> Клиент использует только публичный ключ. Серверные секреты здесь не хранятся.</div></section></div>}

@@ -2,7 +2,7 @@ import type { View } from "./types";
 
 const ALLOWED: ReadonlySet<View> = new Set([
   "overview", "companies", "products", "procurements",
-  "courts", "relations", "sources", "imports",
+  "courts", "relations", "sources", "imports", "dossier",
 ]);
 
 /** Links can open a specific screen without bypassing auth or loading cloud data. */

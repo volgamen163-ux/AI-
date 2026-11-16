@@ -33,5 +33,5 @@ export type Workspace = {
  offers: MarketOffer[]; relations: CompanyRelation[]
 };
 export const EMPTY_WORKSPACE: Workspace = { companies: [], products: [], procurements: [], courts: [], offers: [], relations: [] };
-export type View = "overview" | "companies" | "products" | "procurements" | "courts" | "relations" | "sources" | "imports";
+export type View = "overview" | "companies" | "products" | "procurements" | "courts" | "relations" | "sources" | "imports" | "dossier";
 export type EntityKind = "company" | "product" | "procurement" | "court" | "offer";
